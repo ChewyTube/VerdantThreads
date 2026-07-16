@@ -3,43 +3,49 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
-public class Block
-{
-    BlockType type;
+//public class Block
+//{
+//    BlockType type;
 
-    public Block()
-    {
-        type = BlockType.Void;
-    }
-    public Block(BlockType type)
-    {
-        this.type = type;
-    }
+//    public Block()
+//    {
+//        type = BlockType.Void;
+//    }
+//    public Block(BlockType type)
+//    {
+//        this.type = type;
+//    }
 
-    public BlockType GetBlockType()
-    {
-        return type;
-    }
-}
+//    public BlockType GetBlockType()
+//    {
+//        return type;
+//    }
+//}
 
-public readonly struct Blockv2 : IEquatable<Blockv2>
+public readonly struct Block : IEquatable<Block>
 {
     private readonly uint _value;
 
-    public Blockv2(uint value) => _value = value;
+    public Block(uint value) => _value = value;
+    public Block(BlockType value) => _value = (uint)value;
 
-    public static implicit operator Blockv2(uint value) => new(value);
-    public static explicit operator uint(Blockv2 block) => block._value;
+    public static implicit operator Block(uint value) => new(value);
+    public static explicit operator uint(Block block) => block._value;
 
-    public bool Equals(Blockv2 other) => _value == other._value;
-    public override bool Equals(object obj) => obj is Blockv2 other && Equals(other);
+    public bool Equals(Block other) => _value == other._value;
+    public override bool Equals(object obj) => obj is Block other && Equals(other);
     public override int GetHashCode() => (int)_value;
     public override string ToString() => $"Block({_value})";
 
-    public static bool operator ==(Blockv2 left, Blockv2 right) => left._value == right._value;
-    public static bool operator !=(Blockv2 left, Blockv2 right) => left._value != right._value;
+    public static bool operator ==(Block left, Block right) => left._value == right._value;
+    public static bool operator !=(Block left, Block right) => left._value != right._value;
 
-    public uint GetBlockType() => _value & BlockBits.TypeMask;
+    public uint GetUintBlockType() => _value & BlockBits.TypeMask;
+    public BlockType GetBlockType()
+    {
+        uint bt = _value & BlockBits.TypeMask;
+        return (BlockType)bt;
+    }
     public uint GetBlockState() => _value & BlockBits.StateMask >> BlockBits.StateShift;
 
 
@@ -53,9 +59,9 @@ public static class BlockBits
     public const uint StateMask  = 0x000F_0000;
 }
 
-public enum BlockType
+public enum BlockType : uint
 {
-    ERROR = -1,
+    ERROR = 114514,
     Void = 0,
     Air = 1,
     Grass = 2,
