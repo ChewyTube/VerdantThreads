@@ -17,6 +17,8 @@ public class VoxelChunk : MonoBehaviour
 
     MeshData meshData;
 
+    Mesh mesh;
+
     bool initialized = false;
     bool changed = false;
 
@@ -38,12 +40,13 @@ public class VoxelChunk : MonoBehaviour
         meshFilter = gameObject.AddComponent<MeshFilter>();
         meshRenderer = gameObject.AddComponent<MeshRenderer>();
 
+        // struct 数组元素判 null 恒为 false（装箱比较），原 if 分支永不执行，未初始化数据保持默认 BlockType.Void
+        // 这里无条件填 Air：保证按需恢复的空区块（CreateEmptyVoxelChunk）以空气为基底，不渲染成实心
         for (int x = 0; x < CHUNK_SIZE; x++)
             for (int y = 0; y < CHUNK_SIZE; y++)
                 for (int z = 0; z < CHUNK_SIZE; z++)
                 {
-                    if (blocks[x, y, z] == null)
-                        blocks[x, y, z] = BlockRegistry.Air;
+                    blocks[x, y, z] = BlockRegistry.Air;
                 }
     }
 
@@ -72,15 +75,15 @@ public class VoxelChunk : MonoBehaviour
 
         meshRenderer.sharedMaterial = blockMaterial;
 
-        UpdateOrCreateMesh(true);
+        // mesh 构建已交给 World 的预算队列（MeshOptimize），此处不再同步构建
     }
 
     void Update()
     {
         if (changed)
         {
-            UpdateOrCreateMesh(false);
             changed = false;
+            World.Instance?.RequestMeshRebuild(pos);
         }
     }
 
@@ -117,7 +120,8 @@ public class VoxelChunk : MonoBehaviour
             for (int y = 0; y < CHUNK_SIZE; y++)
                 for (int z = 0; z < CHUNK_SIZE; z++)
                 {
-                    if (blocks[x, y, z].GetBlockType() != BlockType.Air)
+                    var blockType = blocks[x, y, z].GetBlockType();
+                    if (blockType != BlockType.Air && blockType != BlockType.Void)
                     {
                         TryAddFace(meshData, x, y, z, Direction.Up      , firstLoad);
                         TryAddFace(meshData, x, y, z, Direction.Down    , firstLoad);
@@ -128,7 +132,8 @@ public class VoxelChunk : MonoBehaviour
                     }
                 }
 
-        Mesh mesh = meshData.CreateMesh();
+        if (mesh == null) mesh = new Mesh();
+        meshData.FillMesh(mesh);
         meshFilter.mesh = mesh;
     }
 
@@ -164,6 +169,10 @@ public class VoxelChunk : MonoBehaviour
         int z = pos.Z;
 
         return blocks[x, y, z].GetBlockType();
+    }
+    public Block[,,] GetBlocksData()
+    {
+        return blocks;
     }
 
     private void TryAddFace(MeshData meshData, int x, int y, int z, Direction dir, bool firstLoad)

@@ -62,4 +62,18 @@ public struct VoxelChunkData
     {
         return pendingBlocks;
     }
+
+    // 判断该 chunk 数据是否全为空气（Air/Void），用于自动卸载空区块
+    public bool IsEmpty()
+    {
+        for (int x = 0; x < Constants.CHUNK_SIZE; x++)
+            for (int y = 0; y < Constants.CHUNK_SIZE; y++)
+                for (int z = 0; z < Constants.CHUNK_SIZE; z++)
+                {
+                    var t = blocks[x, y, z].GetBlockType();
+                    if (t != BlockType.Air && t != BlockType.Void)
+                        return false;
+                }
+        return true;
+    }
 }

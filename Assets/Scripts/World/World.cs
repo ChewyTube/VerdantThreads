@@ -4,32 +4,32 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
-using static UnityEditor.PlayerSettings;
 
 public class World : MonoBehaviour
 {
     public static World Instance { get; private set; }
 
-    int lineOfSight = 6;
+    int lineOfSight = 12; // 水平视距（可调）
+    int verticalLineOfSight = 6; // 垂直视距，独立于水平视距，减少高空空气 chunk 加载
 
     int seed = 985211;
 
-    private const int MAX_NEW_CHUNKS_PER_FRAME = 2;
-    private const int MAX_MESH_OPTIMIZE_COUNT_PER_FRAME = 2;
+    private const int MAX_NEW_CHUNKS_PER_FRAME = 24;          // 每帧构建 chunk 上限（可调，保证生成追上相机移动）
+    private const int MAX_MESH_OPTIMIZE_COUNT_PER_FRAME = 8;  // 每帧 mesh 优化上限（可调）
     private const int MAX_BLOCKS_PER_FRAME = 64;
-    private SemaphoreSlim _chunkUpdateLock = new(1, 1);
     private readonly ConcurrentQueue<VoxelChunkData> _pendingBuildQueue = new();
     private readonly ConcurrentQueue<List<(BlockPosInWorld, Block)>> _pendingSetBlocksQueue = new();
     private readonly ConcurrentQueue<VCPosInWorld> _pendingMeshOptimizeQueue = new();
+    private const int MAX_FRAME_WORK_BUDGET_MS = 6; // 构建/优化每帧主线程耗时预算（毫秒，可调）
+    private readonly System.Diagnostics.Stopwatch _frameWorkStopwatch = new();
 
     Dictionary<Vector3Int, VoxelChunk> world = new Dictionary<Vector3Int, VoxelChunk>();
-    List<Vector3Int> loadedVoxelChunks = new List<Vector3Int>();
-    List<Vector3Int> VCShouldBeUnloaded = new List<Vector3Int>();
+    HashSet<Vector3Int> loadedVoxelChunks = new HashSet<Vector3Int>();
 
-    FastNoiseLite noise = new FastNoiseLite();
+    private FastNoiseLite noise = new FastNoiseLite();
+    private Saver saver = new Saver("world_saves");
 
     Camera cam;
     Vector3Int VCPosCam;
@@ -44,6 +44,8 @@ public class World : MonoBehaviour
             return;
         }
         Instance = this;
+
+        saver.Initialize(); // 主线程解析保存根目录（Application.persistentDataPath 不能从后台线程读取）
 
         DontDestroyOnLoad(gameObject);
     }
@@ -72,6 +74,8 @@ public class World : MonoBehaviour
         {
             Instance = null;
         }
+
+        saver.Dispose(); // 释放 Saver 持有的 FileStream，防止泄漏
     }
 
     private void InitializeNoise()
@@ -94,35 +98,73 @@ public class World : MonoBehaviour
         // 摄像机所在VC的Position
         VCPosCam = camPosInt.GetCorrespondingVCPos(); 
 
-        if(lastVCPosCam != VCPosCam)
+        if (lastVCPosCam != VCPosCam)
         {
-            _ = OnCameraChunkChanged(VCPosCam);
+            OnCameraChunkChanged(VCPosCam);
+            lastVCPosCam = VCPosCam;
         }
 
-        lastVCPosCam = VCPosCam;
+        // 帧耗时预算：限制构建/优化在主线程的耗时，避免单帧卡顿
+        _frameWorkStopwatch.Restart();
 
         int builtCount = 0;
-        while (builtCount < MAX_NEW_CHUNKS_PER_FRAME && _pendingBuildQueue.TryDequeue(out var chunkData))
+        while (builtCount < MAX_NEW_CHUNKS_PER_FRAME &&
+               _frameWorkStopwatch.ElapsedMilliseconds < MAX_FRAME_WORK_BUDGET_MS &&
+               _pendingBuildQueue.TryDequeue(out var chunkData))
         {
             var pos = chunkData.GetPos();
 
-            if (!world.ContainsKey(pos))
+            // 已加载（含已标记的空区块）或已超出视距（在途生成）→ 跳过本数据
+            if (loadedVoxelChunks.Contains(pos) || !IsWithinViewDistance(pos))
+                continue;
+
+            if (chunkData.IsEmpty())
+            {
+                // 自动卸载空区块：全空气 chunk 不创建对象，仅记录为已加载，节省对象/内存/draw call
+                loadedVoxelChunks.Add(pos);
+            }
+            else
             {
                 CreateVoxelChunk(pos, chunkData.GetBlocksData());
                 builtCount++;
             }
         }
         int setCount = 0;
-        while(setCount < MAX_BLOCKS_PER_FRAME && _pendingSetBlocksQueue.TryDequeue(out var blockList))
+        // 按块数记账：一帧最多处理 MAX_BLOCKS_PER_FRAME 次 Setblock，防止单个列表超预算重放
+        var retryBlocks = new List<(BlockPosInWorld, Block)>();
+        while (setCount < MAX_BLOCKS_PER_FRAME && _pendingSetBlocksQueue.TryDequeue(out var blockList))
         {
-            foreach(var (pos, block) in blockList)
+            int consumed = 0;
+            foreach (var (pos, block) in blockList)
             {
-                Setblock(block, pos);
+                if (setCount >= MAX_BLOCKS_PER_FRAME) break; // 预算耗尽，停止本列表
+
+                if (Setblock(block, pos))
+                {
+                    setCount++;
+                }
+                else if (IsWithinViewDistance(pos.GetCorrespondingVCPos()))
+                {
+                    // 目标 chunk 在视距内但尚未加载：稍后重试（树冠跨界写入，等邻居加载后补齐）
+                    retryBlocks.Add((pos, block));
+                }
+                consumed++;
             }
-            setCount++;
+
+            // 列表被部分消费时，剩余部分重新入队，留到下一帧处理，避免丢数据
+            if (consumed < blockList.Count)
+            {
+                _pendingSetBlocksQueue.Enqueue(blockList.GetRange(consumed, blockList.Count - consumed));
+            }
+        }
+        if (retryBlocks.Count > 0)
+        {
+            _pendingSetBlocksQueue.Enqueue(retryBlocks); // 视距内的失败写入重新入队，下一帧重试
         }
         int optimizeCount = 0;
-        while(optimizeCount < MAX_MESH_OPTIMIZE_COUNT_PER_FRAME && _pendingMeshOptimizeQueue.TryDequeue(out var vcPos))
+        while (optimizeCount < MAX_MESH_OPTIMIZE_COUNT_PER_FRAME &&
+               _frameWorkStopwatch.ElapsedMilliseconds < MAX_FRAME_WORK_BUDGET_MS &&
+               _pendingMeshOptimizeQueue.TryDequeue(out var vcPos))
         {
             world.TryGetValue(vcPos, out var vc);
             if(vc != null)
@@ -134,86 +176,106 @@ public class World : MonoBehaviour
         }
     }
 
-    async Task OnCameraChunkChanged(Vector3Int camPos)
+    // 相机所在 chunk 变化：同步卸载超视距 chunk，并后台生成缺失 chunk 数据（不再丢弃事件）
+    private void OnCameraChunkChanged(Vector3Int camPos)
     {
-        if (!await _chunkUpdateLock.WaitAsync(0)) return;
-        try
+        int x = camPos.x;
+        int y = camPos.y;
+        int z = camPos.z;
+        int l = lineOfSight;
+
+        // 1. 标记并卸载超出视距的 chunk（主线程同步）
+        var toUnload = new HashSet<Vector3Int>();
+        foreach (var chunkPos in loadedVoxelChunks.ToArray())
         {
-            var tasks = new List<Task<VoxelChunkData>>();
-
-            int x = VCPosCam.x;
-            int y = VCPosCam.y;
-            int z = VCPosCam.z;
-
-            int l = lineOfSight;
-
-            foreach (var chunkPos in loadedVoxelChunks.ToArray())
+            if (Math.Abs(chunkPos.x - x) > l ||
+                Math.Abs(chunkPos.y - y) > verticalLineOfSight ||
+                Math.Abs(chunkPos.z - z) > l)
             {
-                int VCx = chunkPos.x;
-                int VCy = chunkPos.y;
-                int VCz = chunkPos.z;
+                toUnload.Add(chunkPos);
+            }
+        }
+        loadedVoxelChunks.ExceptWith(toUnload); // O(n) 差集，避免 RemoveWhere 的 O(n×m) 主线程尖峰
+        foreach (var p in toUnload)
+        {
+            UnloadVoxelChunk(p);
+        }
 
-                int dx = VCx - x;
-                int dy = VCy - y;
-                int dz = VCz - z;
-
-                if (Math.Abs(dx) > lineOfSight ||
-                    Math.Abs(dy) > lineOfSight ||
-                    Math.Abs(dz) > lineOfSight)
+        // 2. 为视距内缺失的 chunk 启动后台生成（结果直接入队，由 Update 按帧消费）
+        for (int X = x - l; X <= x + l; X++)
+            for (int Y = Mathf.Max(y - verticalLineOfSight, 0); Y <= y + verticalLineOfSight; Y++)
+                for (int Z = z - l; Z <= z + l; Z++)
                 {
-                    world.TryGetValue(chunkPos, out var vc);
-
-                    if (vc != null)
-                    {
-                        VCShouldBeUnloaded.Add(chunkPos);
-                    }
-                    else
-                    {
-                        throw new Exception($"Tried to destroy unexist voxelchunk at {chunkPos}");
-                    }
+                    SpawnChunkDataGeneration(new VCPosInWorld(X, Y, Z));
                 }
-            }
-
-            for (int X = x - l; X <= x + l; X++)
-                for (int Y = Mathf.Max(y - l, 0); Y <= y + l; Y++)
-                    for (int Z = z - l; Z <= z + l; Z++)
-                    {
-                        VCPosInWorld pos = new VCPosInWorld(X, Y, Z);
-
-                        if (!world.ContainsKey(pos))
-                        {
-                            tasks.Add(Task.Run(() => GenerateVoxelChunkData(pos)));
-                        }
-                    }
-
-            var chunks = await Task.WhenAll(tasks);
-
-
-            foreach (var chunk in chunks)
-            {
-                _pendingBuildQueue.Enqueue(chunk);
-            }
-
-            loadedVoxelChunks.RemoveAll(p => VCShouldBeUnloaded.Contains(p));
-            foreach(var p in VCShouldBeUnloaded)
-            {
-                world.TryGetValue(p, out var vc);
-                vc.DestroySelf();
-                world.Remove(p);
-            }
-
-            VCShouldBeUnloaded.Clear();
-
-            // Debug.Log($"World Keys: l={world.Keys.Count}, {string.Join(", ", world.Keys)}");
-            // Debug.Log($"Loaded Chunks: l={loadedVoxelChunks.Count}, {string.Join(", ", loadedVoxelChunks)}");
-        }
-        finally
-        {
-            if (this != null) _chunkUpdateLock.Release();
-        }
-
     }
 
+    // 后台生成单个 chunk 数据并直接入队（跨线程安全）；异常仅记录，不中断其他生成
+    private void SpawnChunkDataGeneration(VCPosInWorld pos)
+    {
+        if (loadedVoxelChunks.Contains(pos)) return;
+        Task.Run(() =>
+        {
+            try
+            {
+                _pendingBuildQueue.Enqueue(GenerateVoxelChunkData(pos));
+            }
+            catch (Exception ex)
+            {
+                Debug.LogException(ex);
+            }
+        });
+    }
+
+    // 请求重建 chunk mesh（走帧预算队列，避免 setblock 重放在单帧内同步重建过多 chunk）
+    public void RequestMeshRebuild(VCPosInWorld vcPos)
+    {
+        _pendingMeshOptimizeQueue.Enqueue(vcPos);
+    }
+
+    // 判断 chunk 是否在相机的视距内（用于构建守卫与树冠写入重试）
+    private bool IsWithinViewDistance(VCPosInWorld vcPos)
+    {
+        return Math.Abs(vcPos.X - VCPosCam.x) <= lineOfSight &&
+               Math.Abs(vcPos.Y - VCPosCam.y) <= verticalLineOfSight &&
+               Math.Abs(vcPos.Z - VCPosCam.z) <= lineOfSight;
+    }
+
+    private void UnloadVoxelChunk(Vector3Int pos)
+    {
+        //Debug.Log($"Unloading VoxelChunk at {pos}");
+        if (!world.TryGetValue(pos, out var vc))
+        {
+            // 空区块（未创建对象）：无需保存/销毁，位置已在调用方从 loadedVoxelChunks 移除
+            return;
+        }
+
+        //Debug.Log($"Saving VoxelChunk at {pos}");
+        // _ = saver.EnqueueSaveAsync(new(pos.x, pos.y, pos.z), vc.GetBlocksData());
+        saver.SaveVoxelChunk(new(pos.x, pos.y, pos.z), vc.GetBlocksData());
+        // Debug.Log($"Saved VoxelChunk at {pos}");
+
+        vc.DestroySelf();
+        world.Remove(pos);
+
+        // 邻居重新入队 MeshOptimize：卸载后重新评估边界剔除，修复世界边缘透空
+        int[] offsets = { -1, 1 };
+        foreach (int dx in offsets)
+        {
+            VCPosInWorld n = new VCPosInWorld(pos.x + dx, pos.y, pos.z);
+            if (world.ContainsKey(n)) _pendingMeshOptimizeQueue.Enqueue(n);
+        }
+        foreach (int dy in offsets)
+        {
+            VCPosInWorld n = new VCPosInWorld(pos.x, pos.y + dy, pos.z);
+            if (world.ContainsKey(n)) _pendingMeshOptimizeQueue.Enqueue(n);
+        }
+        foreach (int dz in offsets)
+        {
+            VCPosInWorld n = new VCPosInWorld(pos.x, pos.y, pos.z + dz);
+            if (world.ContainsKey(n)) _pendingMeshOptimizeQueue.Enqueue(n);
+        }
+    }
     private VoxelChunkData GenerateVoxelChunkData(VCPosInWorld pos)
     {
         int CHUNK_SIZE = Constants.CHUNK_SIZE;
@@ -302,11 +364,9 @@ public class World : MonoBehaviour
     {
         for (int x = -lineOfSight; x < lineOfSight; x++)
             for(int z = -lineOfSight; z < lineOfSight; z++)
-                for (int y = 0; y < lineOfSight; y++)
+                for (int y = 0; y < verticalLineOfSight; y++)
                 {
-                    VCPosInWorld pos = new(x, y, z);
-                    Block[,,] data = GenerateVoxelChunkData(pos).GetBlocksData();
-                    CreateVoxelChunk(pos, data);
+                    SpawnChunkDataGeneration(new(x, y, z));
                 }
     }
 
@@ -356,18 +416,13 @@ public class World : MonoBehaviour
 
         if (!world.TryGetValue(vcPos, out VoxelChunk targetChunk))
         {
-            var data = GenerateVoxelChunkData(vcPos);
-            CreateVoxelChunk(vcPos, data.GetBlocksData());
-            _pendingSetBlocksQueue.Enqueue(data.GetPendingBlocks());
-            if(!world.TryGetValue(vcPos, out targetChunk))
-            {
-                throw new Exception("Failed to create VoxelChunk at setblock!");
-            }
+            // 目标 chunk 未加载：丢弃本次写入（跨 chunk 装饰性写入，避免主线程同步生成级联创建 chunk）
+            return;
         }
 
         targetChunk.SetBlock(block, bPos.X, bPos.Y, bPos.Z);
     }
-    private void Setblock(Block block, BlockPosInWorld pos)
+    private bool Setblock(Block block, BlockPosInWorld pos)
     {
         int x = pos.X;
         int y = pos.Y;
@@ -380,16 +435,22 @@ public class World : MonoBehaviour
 
         if (!world.TryGetValue(vcPos, out VoxelChunk targetChunk))
         {
-            var data = GenerateVoxelChunkData(vcPos);
-            CreateVoxelChunk(vcPos, data.GetBlocksData());
-            _pendingSetBlocksQueue.Enqueue(data.GetPendingBlocks());
-            if (!world.TryGetValue(vcPos, out targetChunk))
+            // 目标 chunk 未创建：若为已标记的空区块，则按需创建（接收跨界树冠写入，保证树冠完整）
+            if (loadedVoxelChunks.Contains(vcPos))
             {
-                throw new Exception("Failed to create VoxelChunk at setblock!");
+                CreateEmptyVoxelChunk(vcPos);
+                world.TryGetValue(vcPos, out targetChunk);
+            }
+
+            if (targetChunk == null)
+            {
+                // 目标不在视距盒内：返回 false，由调用方决定重试或丢弃
+                return false;
             }
         }
 
         targetChunk.SetBlock(block, bPos.X, bPos.Y, bPos.Z);
+        return true;
     }
 
     public void TryGetBlock(BlockPosInWorld pos, out BlockType bt)
@@ -425,9 +486,8 @@ public class World : MonoBehaviour
     {
         if (world.ContainsKey(pos))
         {
-            throw new Exception($"Repeatedly adding chunk{pos}");
-            // Debug.LogError($"Repeatedly adding chunk{pos}");
-            // return;
+            Debug.LogWarning($"Repeatedly adding chunk{pos}");
+            return;
         }
 
         GameObject chunkGO = new GameObject($"Chunk_{pos.X}_{pos.Y}_{pos.Z}");

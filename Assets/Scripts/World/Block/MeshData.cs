@@ -7,6 +7,7 @@ public class MeshData
     private List<Vector3> vertices = new List<Vector3>();
     private List<int> triangles = new List<int>();
     private List<Vector2> uvs = new List<Vector2>();
+    private List<Vector3> normals = new List<Vector3>();
 
 
     // 图集配置
@@ -22,9 +23,20 @@ public class MeshData
         totalSize = atlasSize * sizePerTexture;
     }
 
+    // 按 VoxelChunk.Direction 语义映射（North=+Z、South=-Z），与 FaceIndex 数值标签相反
+    private static readonly Vector3[] FaceNormals =
+    {
+        /* East=0  */ Vector3.right,   // +X
+        /* West=1  */ Vector3.left,    // -X
+        /* Up=2    */ Vector3.up,      // +Y
+        /* Down=3  */ Vector3.down,    // -Y
+        /* South=4 */ Vector3.back,    // -Z
+        /* North=5 */ Vector3.forward, // +Z
+    };
+
     public void Clear()
     {
-        vertices.Clear(); triangles.Clear(); uvs.Clear();
+        vertices.Clear(); triangles.Clear(); uvs.Clear(); normals.Clear();
     }
 
     public void AddFace(int x, int y, int z, Direction dir, Block block)
@@ -49,6 +61,13 @@ public class MeshData
         Vector2 uvOffset = GetUVOffset(blockType, (int)dir);
         Vector2[] faceUVs = GetFaceUVs(uvOffset, dir);
         uvs.AddRange(faceUVs);
+
+        // 4. 逐面写入法线（体素面为轴对齐平面，法线即面朝向，无需 RecalculateNormals）
+        Vector3 normal = FaceNormals[(int)dir];
+        normals.Add(normal);
+        normals.Add(normal);
+        normals.Add(normal);
+        normals.Add(normal);
     }
 
     private Vector3[] GetFaceVertices(int x, int y, int z, Direction dir)
@@ -84,8 +103,6 @@ public class MeshData
             uv = new(u, v);
 
             DataBuffer.Instance.Block2uvs[(blockType, faceIndex)] = uv;
-
-            Debug.Log($"uv not found:{blockType} -> uv={uv}; uvIndex={uvIndex}");
         }
         else
         {
@@ -111,17 +128,14 @@ public class MeshData
         };
     }
 
-    public Mesh CreateMesh()
+    // 原地写入既有 Mesh 实例，避免每次 new Mesh + ToArray 分配
+    public void FillMesh(Mesh mesh)
     {
-        Mesh mesh = new Mesh();
-        mesh.vertices = vertices.ToArray();
-        mesh.triangles = triangles.ToArray();
-        mesh.uv = uvs.ToArray();
-
-        // Debug.Log($"Mesh UV count: {uvs.Count}, First UV: {uvs[0]}, TileSize: {pixelSize}");
-
-        mesh.RecalculateNormals();
+        mesh.Clear();
+        mesh.SetVertices(vertices);
+        mesh.SetTriangles(triangles, 0);
+        mesh.SetUVs(0, uvs);
+        mesh.SetNormals(normals);
         mesh.RecalculateBounds();
-        return mesh;
     }
 }

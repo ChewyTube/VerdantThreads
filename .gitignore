@@ -104,3 +104,18 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# Codely（团结引擎 AI 助手）工具链与桥接配置 —— 非项目代码，含可执行文件与依赖，不入库
+.codely-cli/
+.com-unity-codely.json
+.codelyignore
+
+# 凭据/密钥类文件兜底（当前项目无密钥，防御未来添加）
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+secrets.*
+
