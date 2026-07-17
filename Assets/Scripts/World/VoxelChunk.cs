@@ -165,6 +165,10 @@ public class VoxelChunk : MonoBehaviour
 
         return blocks[x, y, z].GetBlockType();
     }
+    public Block[,,] GetBlocksData()
+    {
+        return blocks;
+    }
 
     private void TryAddFace(MeshData meshData, int x, int y, int z, Direction dir, bool firstLoad)
     {

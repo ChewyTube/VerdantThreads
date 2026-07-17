@@ -29,7 +29,8 @@ public class World : MonoBehaviour
     List<Vector3Int> loadedVoxelChunks = new List<Vector3Int>();
     List<Vector3Int> VCShouldBeUnloaded = new List<Vector3Int>();
 
-    FastNoiseLite noise = new FastNoiseLite();
+    private FastNoiseLite noise = new FastNoiseLite();
+    private Saver saver = new Saver("world_saves");
 
     Camera cam;
     Vector3Int VCPosCam;
@@ -197,9 +198,7 @@ public class World : MonoBehaviour
             loadedVoxelChunks.RemoveAll(p => VCShouldBeUnloaded.Contains(p));
             foreach(var p in VCShouldBeUnloaded)
             {
-                world.TryGetValue(p, out var vc);
-                vc.DestroySelf();
-                world.Remove(p);
+                UnloadVoxelChunk(p);
             }
 
             VCShouldBeUnloaded.Clear();
@@ -207,13 +206,29 @@ public class World : MonoBehaviour
             // Debug.Log($"World Keys: l={world.Keys.Count}, {string.Join(", ", world.Keys)}");
             // Debug.Log($"Loaded Chunks: l={loadedVoxelChunks.Count}, {string.Join(", ", loadedVoxelChunks)}");
         }
+        catch (Exception ex)
+        {
+            Debug.LogException(ex);
+            throw ex;
+        }
         finally
         {
             if (this != null) _chunkUpdateLock.Release();
         }
+    }
+    private void UnloadVoxelChunk(Vector3Int pos)
+    {
+        //Debug.Log($"Unloading VoxelChunk at {pos}");
+        world.TryGetValue(pos, out var vc);
+
+        //Debug.Log($"Saving VoxelChunk at {pos}");
+        saver.SaveVoxelChunk(new(pos.x, pos.y, pos.z), vc.GetBlocksData());
+        Debug.Log($"Saved VoxelChunk at {pos}");
+
+        vc.DestroySelf();
+        world.Remove(pos);
 
     }
-
     private VoxelChunkData GenerateVoxelChunkData(VCPosInWorld pos)
     {
         int CHUNK_SIZE = Constants.CHUNK_SIZE;

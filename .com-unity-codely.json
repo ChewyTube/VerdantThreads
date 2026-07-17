@@ -1,10 +1,10 @@
 {
-  "unity_port": 57316,
-  "stream_port": 57424,
+  "unity_port": 62422,
+  "stream_port": 62512,
   "created_date": "2026-07-03T03:10:01.1658727Z",
   "project_path": "D:/UnityProjects/VerdantThreads/Assets",
   "reloading": false,
   "reason": "ready",
   "seq": 1,
-  "last_heartbeat": "2026-07-16T05:59:26.5063006Z"
+  "last_heartbeat": "2026-07-17T10:00:40.1805457Z"
 }
