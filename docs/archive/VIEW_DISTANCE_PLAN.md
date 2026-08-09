@@ -2,7 +2,7 @@
 
 > 目标：视距从 6 提升到 12；保持平时 ~200fps；地形加载时帧率不掉到 30 以下。
 > 前提判断：平时 200fps 说明渲染 / draw call 余量巨大；30fps 仅出现在加载新地形时 → 瓶颈是**加载路径的主线程工作量**（chunk 对象创建、mesh 上传、GC）。因此本期**不做网格合并 / LOD**。
-> 实施状态：2026-08-09 —— ①②③⑥⑦ 已实现并复核；④ 已实现（2026-08-09）；⑤ 待实施。
+> 实施状态：2026-08-09 —— ①②③⑥⑦ 已实现并复核；④ 已实现（2026-08-09）；⑤ 已实现（2026-08-09）。
 
 ## 现状量化
 
@@ -39,8 +39,11 @@
 - 构建/上传队列按到相机距离排序（按距离环分桶），视野内先填满，pop-in 从近到远。
 - `OnCameraChunkChanged` 只 spawn 新暴露的位置，并用"已 spawn 未构建"集合避免对同一位置重复 `Task.Run`（当前整盒扫描 + `ContainsKey` 只看已创建，会造成重复生成）。
 
-### ⑤ 存档背压（待实施）
+### ⑤ 存档背压 ✅ 已实现
 l=12 时每次跨 chunk 卸载 ~175-425 个，入队 16KB×N；worker 受 fsync 限制可能落后。恢复保存队列上限（满则阻塞/同步兜底），worker 改按区域批量 flush 减少 fsync 次数，防止连续移动时内存无界增长。
+- `Saver.EnqueueSave`：队列上限 1024（≈16MB）；满则主线程同步兜底 `SaveSync` 直接写（与 worker 通过 `_writeLock` 互斥），防内存无界增长。
+- `SaveLoop`：每写满 32 个 chunk 才 `FlushAllWriters()` 批量落盘一次（fsync 次数从每 chunk 1 次降到每 32 chunk 每活跃 region 1 次）；`_completed` 退出前再 flush 一次并统一 Dispose。
+- `SetQueueLimit(int.MaxValue)`：`OnApplicationQuit` 全量保存前放开上限，几千个 chunk 正常入队由 `Dispose` 排空落盘，不触发同步兜底卡死退出。
 
 ### ⑥ 常数微调 ✅ 已实现（随①落地）
 `lineOfSight = 12`；加载 catch-up 积压大时构建预算可临时放宽到 ~8-10ms、追平后回落（平时帧率不受影响，移动时少掉帧）。

@@ -47,6 +47,8 @@ public class World : MonoBehaviour
     private FastNoiseLite noise = new FastNoiseLite();
     private Saver saver = new Saver("world_saves");
 
+    [SerializeField] private Vector3 cameraSpawnPos = new(0, 64, 0); // 相机出生点（可在 Inspector 覆盖，不再硬编码覆盖场景摆放）
+
     Camera cam;
     Vector3Int VCPosCam;
     Vector3Int lastVCPosCam;
@@ -72,9 +74,9 @@ public class World : MonoBehaviour
         InitializeNoise();
 
         cam = Camera.main;
-        cam.transform.position = new(0, 64, 0);
+        cam.transform.position = cameraSpawnPos; // 出生点可配，不再强制 (0,64,0)
 
-        VCPosCam = new BlockPosInWorld(0, 64, 0).GetCorrespondingVCPos();
+        VCPosCam = new BlockPosInWorld((int)cameraSpawnPos.x, (int)cameraSpawnPos.y, (int)cameraSpawnPos.z).GetCorrespondingVCPos();
         lastVCPosCam = VCPosCam;
         // hasPrevViewBox 保持 false：首次相机变化时"旧盒视为空"，新暴露 = 完整视距盒，
         // 由环逻辑补齐 GenerateWorld 只生成的地形核心层之外的其余层（不遗漏、不重复）
@@ -88,7 +90,30 @@ public class World : MonoBehaviour
             Instance = null;
         }
 
-        saver.Dispose(); // 释放 Saver 持有的 FileStream，防止泄漏
+        saver.Dispose(); // 释放 Saver 持有的 FileStream，防止泄漏（内部会排空保存队列后退出）
+    }
+
+    void OnApplicationQuit()
+    {
+        SaveAllLoadedChunks();
+    }
+
+    // 退出兜底：卸载路径只保存被卸载的 chunk，仍在内存的 chunk 若不主动入队会丢修改
+    private void SaveAllLoadedChunks()
+    {
+        saver.SetQueueLimit(int.MaxValue); // ⑤ 退出前放开背压：全量入队由 Dispose 排空落盘，不触发同步兜底
+
+        // 先尽力应用一次跨 chunk 挂起写入（树冠等），避免退出时丢 pendingBlocks
+        while (_pendingSetBlocksQueue.TryDequeue(out var blockList))
+        {
+            foreach (var (pos, block) in blockList)
+                Setblock(block, pos);
+        }
+
+        // 全量入队（空 chunk 无对象不在 world 字典里，无需保存）；
+        // OnApplicationQuit 先于 OnDestroy 触发，入队任务由随后 saver.Dispose() 排空落盘
+        foreach (var (pos, vc) in world)
+            saver.SaveVoxelChunk(new(pos.x, pos.y, pos.z), vc.GetBlocksData());
     }
 
     private void InitializeNoise()
@@ -438,6 +463,13 @@ public class World : MonoBehaviour
     }
     private VoxelChunkData GenerateVoxelChunkData(VCPosInWorld pos, Block[,,] blocks)
     {
+        // 读路径：#14 先查存档，命中则直接用已保存数据（含玩家修改），跳过重新生成
+        Block[,,] loaded = saver.TryLoadVoxelChunk(pos);
+        if (loaded != null)
+        {
+            return new VoxelChunkData(loaded, pos, new List<(BlockPosInWorld, Block)>(), fillAir: false);
+        }
+
         int CHUNK_SIZE = Constants.CHUNK_SIZE;
 
         int baseHeight = 0;
@@ -533,58 +565,6 @@ public class World : MonoBehaviour
                 }
     }
 
-    private void GenerateVoxelChunk(VCPosInWorld pos)
-    {
-        int CHUNK_SIZE = Constants.CHUNK_SIZE;
-
-        int baseHeight = 0;
-
-        for (int x = 0; x < CHUNK_SIZE; x++)
-            for (int y = 0; y < CHUNK_SIZE; y++)
-                for (int z = 0; z < CHUNK_SIZE; z++)
-                {
-                    int blockX = pos.X * CHUNK_SIZE + x;
-                    int blockY = pos.Y * CHUNK_SIZE + y;
-                    int blockZ = pos.Z * CHUNK_SIZE + z;
-
-                    baseHeight = (int)((noise.GetNoise(blockX, blockZ) + 1) * 0.5f * 20);
-
-                    if (blockY == 0)
-                    {
-                        Setblock(BlockRegistry.Bedrock, blockX, 0, blockZ);
-                    }
-                    else if (blockY <= baseHeight && blockY > 0)
-                    {
-                        Setblock(BlockRegistry.Stone, blockX, blockY, blockZ);
-                    }else if (blockY <= baseHeight + 2)
-                    {
-                        Setblock(BlockRegistry.Dirt, blockX, blockY, blockZ);
-                    }else if (blockY <= baseHeight + 3)
-                    {
-                        Setblock(BlockRegistry.Grass, blockX, blockY, blockZ);
-                    }
-                    else
-                    {
-                        continue;
-                    }
-
-                }
-    }
-    private void Setblock(Block block, int x, int y, int z)
-    {
-        BlockPosInWorld posInWorld = new BlockPosInWorld(x, y, z);
-
-        VCPosInWorld vcPos = posInWorld.GetCorrespondingVCPos();
-        BlockPosInVoxelChunk bPos = posInWorld.GetCorrespondingPosInVC();
-
-        if (!world.TryGetValue(vcPos, out VoxelChunk targetChunk))
-        {
-            // 目标 chunk 未加载：丢弃本次写入（跨 chunk 装饰性写入，避免主线程同步生成级联创建 chunk）
-            return;
-        }
-
-        targetChunk.SetBlock(block, bPos.X, bPos.Y, bPos.Z);
-    }
     private bool Setblock(Block block, BlockPosInWorld pos)
     {
         int x = pos.X;
@@ -616,22 +596,8 @@ public class World : MonoBehaviour
         return true;
     }
 
-    public void TryGetBlock(BlockPosInWorld pos, out BlockType bt)
-    {
-        VCPosInWorld vcPos = pos.GetCorrespondingVCPos();
-        BlockPosInVoxelChunk blockLocalPos = pos.GetCorrespondingPosInVC();
-
-        world.TryGetValue(vcPos, out VoxelChunk vc);
-
-        if (vc != null)
-        {
-            bt = vc.GetBlock(blockLocalPos);
-        }
-        else
-        {
-            bt = BlockType.ERROR;
-        }
-    }
+    // 玩家交互等外部模块的公开写入口：复用跨 chunk 写入逻辑
+    public bool SetBlock(Block block, BlockPosInWorld pos) => Setblock(block, pos);
 
     // 从 chunk 池取复用对象；池空返回 null（防御 Unity 侧销毁的 null 项）
     private VoxelChunk GetChunkFromPool()

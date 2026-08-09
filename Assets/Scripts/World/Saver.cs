@@ -17,107 +17,9 @@ public struct SaveTask
     public Vector3Int RegionPos;
     public int LocalX, LocalY, LocalZ;
     public uint[,,] RawChunkData;
+    public int RetryCount; // 失败重试次数（重入队时递增）
 }
 
-//public class AsyncSaver : IDisposable, IAsyncDisposable
-//{
-//    private readonly ConcurrentQueue<SaveTask> _queue = new();
-//    private readonly SemaphoreSlim _signal = new(0);
-//    private volatile bool _completed;
-//    private Task _workerTask;
-//    private readonly string _path;
-//    private bool _disposed;
-
-//    private const int MAX_QUEUE_SIZE = 1024;
-
-//    public AsyncSaver(string path)
-//    {
-//        _path = path;
-//        _workerTask = Task.Run(SaveLoop);
-//    }
-//    public async Task EnqueueSaveAsync(VCPosInWorld vcPos, Block[,,] chunkData)
-//    {
-//        if (_completed) throw new InvalidOperationException("Saver is already disposed.");
-
-//        while (_queue.Count >= MAX_QUEUE_SIZE)
-//        {
-//            await Task.Yield();
-//        }
-
-//        uint[,,] rawCopy = new uint[16, 16, 16];
-//        Buffer.BlockCopy(chunkData, 0, rawCopy, 0, 4096 * sizeof(uint));
-
-//        var task = new SaveTask
-//        {
-//            RegionPos = new Vector3Int(vcPos.X >> 5, vcPos.Y >> 5, vcPos.Z >> 5),
-//            LocalX = vcPos.X & 31,
-//            LocalY = vcPos.Y & 31,
-//            LocalZ = vcPos.Z & 31,
-//            RawChunkData = rawCopy
-//        };
-
-//        _queue.Enqueue(task);
-//        _signal.Release(); 
-//    }
-
-//    private async Task SaveLoop()
-//    {
-//        var readers = new Dictionary<Vector3Int, SimpleRegionWriter>();
-
-//        while (true)
-//        {
-//            // 等待信号量，避免空转消耗 CPU
-//            await _signal.WaitAsync();
-
-//            if (_queue.TryDequeue(out var task))
-//            {
-//                try
-//                {
-//                    byte[] compressed = ZlibChunkCompressor.Compress(task.RawChunkData);
-
-//                    if (!readers.TryGetValue(task.RegionPos, out var writer))
-//                    {
-//                        writer = new SimpleRegionWriter(_path, task.RegionPos);
-//                        readers[task.RegionPos] = writer;
-//                    }
-//                    writer.WriteVoxelChunk(task.LocalX, task.LocalY, task.LocalZ, compressed);
-//                    writer.Flush();
-//                }
-//                catch (Exception e) { Debug.LogException(e); }
-//            }
-//            else if (_completed)
-//            {
-//                break; 
-//            }
-//        }
-
-//        foreach (var w in readers.Values) w.Dispose();
-//    }
-
-//    public async ValueTask DisposeAsync()
-//    {
-//        if (_disposed) return;
-//        _disposed = true;
-//        _completed = true;
-
-//        _signal.Release(); // 唤醒可能正在 WaitAsync 的后台线程
-//        if (_workerTask != null) await _workerTask;
-//        _signal.Dispose();
-//        GC.SuppressFinalize(this);
-//    }
-
-//    public void Dispose()
-//    {
-//        if (_disposed) return;
-//        _disposed = true;
-//        _completed = true;
-
-//        _signal.Release();
-//        try { _workerTask?.Wait(); } catch (AggregateException) { }
-//        _signal.Dispose();
-//        GC.SuppressFinalize(this);
-//    }
-//}
 public class Saver
 {
     private readonly ConcurrentQueue<SaveTask> _queue = new();
@@ -127,6 +29,14 @@ public class Saver
     private bool _disposed;
     private readonly string _path;
     private string _saveRoot; // 保存根目录（主线程初始化，Application.persistentDataPath 仅主线程可访问）
+    private const int MAX_RETRY = 3; // 单个 chunk 保存失败最多重试次数
+    private int _failedCount;        // 最终失败的 chunk 数（Interlocked，供 Dispose 汇总）
+
+    // ⑤ 存档背压：队列上限（满则主线程同步兜底，防内存无界增长）与批量 flush（减少 fsync 次数）
+    private int _maxQueueSize = 1024;   // 队列上限：1024 × 16KB ≈ 16MB（可被 SetQueueLimit 覆盖）
+    private const int BATCH_FLUSH_CHUNKS = 32; // worker 每写满 N 个 chunk 批量 flush 一次全部活跃 region
+    private readonly Dictionary<Vector3Int, SimpleRegionWriter> _writers = new(); // region writer 缓存（worker 与同步兜底共享，_writeLock 保护）
+    private readonly object _writeLock = new();
 
     public Saver(string path) {  _path = path; _workerTask = Task.Run(SaveLoop); }
 
@@ -136,49 +46,93 @@ public class Saver
         _saveRoot = Application.persistentDataPath;
     }
 
+    // ⑤ 背压：运行时默认上限 1024；退出全量保存前放开上限（int.MaxValue），
+    // 避免几千个 chunk 全走主线程同步兜底卡死退出流程。须主线程调用。
+    public void SetQueueLimit(int maxQueueSize)
+    {
+        _maxQueueSize = maxQueueSize;
+    }
+
     public void SaveVoxelChunk(VCPosInWorld vcPos, uint[,,] chunkData)
     {
         if (_completed) throw new InvalidOperationException("Saver 已释放，不能继续入队保存任务。");
 
-        uint[,,] rawCopy = new uint[16, 16, 16];
-        Buffer.BlockCopy(chunkData, 0, rawCopy, 0, 4096 * sizeof(uint)); // 复制一份，防止调用方复用数组
+        uint[,,] rawCopy = new uint[Constants.CHUNK_SIZE, Constants.CHUNK_SIZE, Constants.CHUNK_SIZE];
+        Buffer.BlockCopy(chunkData, 0, rawCopy, 0, Constants.CHUNK_VOLUME * sizeof(uint)); // 复制一份，防止调用方复用数组
 
-        _queue.Enqueue(new SaveTask
+        EnqueueSave(new SaveTask
         {
-            RegionPos = new Vector3Int(vcPos.X >> 5, vcPos.Y >> 5, vcPos.Z >> 5),
-            LocalX = vcPos.X & 31,
-            LocalY = vcPos.Y & 31,
-            LocalZ = vcPos.Z & 31,
+            RegionPos = new Vector3Int(vcPos.X >> Constants.REGION_SIZE_LOG2, vcPos.Y >> Constants.REGION_SIZE_LOG2, vcPos.Z >> Constants.REGION_SIZE_LOG2),
+            LocalX = vcPos.X & (Constants.REGION_SIZE - 1),
+            LocalY = vcPos.Y & (Constants.REGION_SIZE - 1),
+            LocalZ = vcPos.Z & (Constants.REGION_SIZE - 1),
             RawChunkData = rawCopy
         });
-        _signal.Release();
     }
 
     public void SaveVoxelChunk(VCPosInWorld vcPos, Block[,,] chunkData)
     {
         if (_completed) throw new InvalidOperationException("Saver 已释放，不能继续入队保存任务。");
 
-        uint[,,] rawCopy = new uint[16, 16, 16];
+        uint[,,] rawCopy = new uint[Constants.CHUNK_SIZE, Constants.CHUNK_SIZE, Constants.CHUNK_SIZE];
         // Buffer.BlockCopy 仅接受基元类型数组，Block 是 struct（即使单 uint 可 blittable）也会抛 ArgumentException，故手动转换
-        for (int x = 0; x < 16; x++)
-            for (int y = 0; y < 16; y++)
-                for (int z = 0; z < 16; z++)
+        for (int x = 0; x < Constants.CHUNK_SIZE; x++)
+            for (int y = 0; y < Constants.CHUNK_SIZE; y++)
+                for (int z = 0; z < Constants.CHUNK_SIZE; z++)
                     rawCopy[x, y, z] = (uint)chunkData[x, y, z];
 
-        _queue.Enqueue(new SaveTask
+        EnqueueSave(new SaveTask
         {
-            RegionPos = new Vector3Int(vcPos.X >> 5, vcPos.Y >> 5, vcPos.Z >> 5),
-            LocalX = vcPos.X & 31,
-            LocalY = vcPos.Y & 31,
-            LocalZ = vcPos.Z & 31,
+            RegionPos = new Vector3Int(vcPos.X >> Constants.REGION_SIZE_LOG2, vcPos.Y >> Constants.REGION_SIZE_LOG2, vcPos.Z >> Constants.REGION_SIZE_LOG2),
+            LocalX = vcPos.X & (Constants.REGION_SIZE - 1),
+            LocalY = vcPos.Y & (Constants.REGION_SIZE - 1),
+            LocalZ = vcPos.Z & (Constants.REGION_SIZE - 1),
             RawChunkData = rawCopy
         });
+    }
+
+    // ⑤ 背压：队列未满正常入队；满则主线程同步兜底直接写入，防止连续移动时内存无界增长
+    private void EnqueueSave(SaveTask task)
+    {
+        if (_queue.Count >= _maxQueueSize)
+        {
+            SaveSync(task);
+            return;
+        }
+
+        _queue.Enqueue(task);
         _signal.Release();
+    }
+
+    // 主线程同步兜底（仅队列满时触发；与 worker 通过 _writeLock 互斥，_saveRoot 已由 Initialize 解析）
+    private void SaveSync(SaveTask task)
+    {
+        try
+        {
+            byte[] compressed = ZlibChunkCompressor.Compress(task.RawChunkData, System.IO.Compression.CompressionLevel.Fastest);
+
+            lock (_writeLock)
+            {
+                if (!_writers.TryGetValue(task.RegionPos, out var writer))
+                {
+                    writer = new SimpleRegionWriter(_saveRoot, _path, task.RegionPos);
+                    _writers[task.RegionPos] = writer;
+                }
+                writer.WriteVoxelChunk(task.LocalX, task.LocalY, task.LocalZ, compressed);
+                writer.Flush();
+            }
+        }
+        catch (Exception e)
+        {
+            Interlocked.Increment(ref _failedCount);
+            Debug.LogError($"[Saver] 同步兜底保存失败：region {task.RegionPos}，" +
+                           $"local ({task.LocalX},{task.LocalY},{task.LocalZ})，异常：{e.Message}");
+        }
     }
 
     private async Task SaveLoop()
     {
-        var writers = new Dictionary<Vector3Int, SimpleRegionWriter>();
+        int sinceFlush = 0; // 距上次批量 flush 已写的 chunk 数
 
         while (true)
         {
@@ -190,27 +144,126 @@ public class Saver
                 {
                     byte[] compressed = ZlibChunkCompressor.Compress(task.RawChunkData, System.IO.Compression.CompressionLevel.Fastest);
 
-                    if (!writers.TryGetValue(task.RegionPos, out var writer))
+                    lock (_writeLock) // 与主线程同步兜底（SaveSync）互斥
                     {
-                        writer = new SimpleRegionWriter(_saveRoot, _path, task.RegionPos);
-                        writers[task.RegionPos] = writer;
+                        if (!_writers.TryGetValue(task.RegionPos, out var writer))
+                        {
+                            writer = new SimpleRegionWriter(_saveRoot, _path, task.RegionPos);
+                            _writers[task.RegionPos] = writer;
+                        }
+
+                        writer.WriteVoxelChunk(task.LocalX, task.LocalY, task.LocalZ, compressed);
                     }
 
-                    writer.WriteVoxelChunk(task.LocalX, task.LocalY, task.LocalZ, compressed);
-                    writer.Flush();
+                    // ⑤ 批量 flush：每写满 BATCH_FLUSH_CHUNKS 个 chunk 才落盘一次，减少 fsync 次数
+                    if (++sinceFlush >= BATCH_FLUSH_CHUNKS)
+                    {
+                        sinceFlush = 0;
+                        FlushAllWriters();
+                    }
                 }
                 catch (Exception e)
                 {
-                    Debug.LogException(e);
+                    if (task.RetryCount < MAX_RETRY)
+                    {
+                        task.RetryCount++;
+                        _queue.Enqueue(task); // 重新入队重试（写入失败多为瞬时 IO 问题）
+                        _signal.Release();    // 必须补信号，否则 worker 会挂在 WaitAsync 上不去消费重试任务
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref _failedCount);
+                        Debug.LogError($"[Saver] chunk 保存失败（已重试 {MAX_RETRY} 次后放弃）：region {task.RegionPos}，" +
+                                       $"local ({task.LocalX},{task.LocalY},{task.LocalZ})，异常：{e.Message}");
+                    }
                 }
             }
             else if (_completed)
             {
+                FlushAllWriters(); // 退出前把积压的写入落盘
                 break; // 队列已空且已请求结束
             }
         }
 
-        foreach (var w in writers.Values) w.Dispose();
+        lock (_writeLock)
+        {
+            foreach (var w in _writers.Values) w.Dispose();
+            _writers.Clear();
+        }
+    }
+
+    // 落盘全部活跃 region writer（批量 flush，减少 fsync 次数）
+    private void FlushAllWriters()
+    {
+        lock (_writeLock)
+        {
+            foreach (var w in _writers.Values) w.Flush();
+        }
+    }
+
+    // 读路径：从 .vrf region 文件加载单个 chunk。缺失/损坏/未保存 → 返回 null，由调用方重新生成。
+    // 后台线程可安全调用（独立打开文件流，与写路径的 _writers 互不干扰；FileShare.ReadWrite 允许并发）。
+    public Block[,,] TryLoadVoxelChunk(VCPosInWorld vcPos)
+    {
+        // 存档根目录未初始化（Initialize 前）→ 视为无存档
+        if (string.IsNullOrEmpty(_saveRoot)) return null;
+
+        string filePath = $"{_saveRoot}/{_path}/r.{vcPos.X >> Constants.REGION_SIZE_LOG2}.{vcPos.Y >> Constants.REGION_SIZE_LOG2}.{vcPos.Z >> Constants.REGION_SIZE_LOG2}.vrf";
+        if (!File.Exists(filePath)) return null; // 无该 region 文件：避免走异常路径（启动时每 chunk 查一次）
+
+        try
+        {
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+
+            // 1. 校验版本头（magic "VRF1" + version=1）
+            if (fs.Length < SimpleRegionWriter.FORMAT_MAGIC_SIZE + SimpleRegionWriter.INDEX_SIZE)
+                return null;
+
+            Span<byte> magic = stackalloc byte[8];
+            int read = fs.Read(magic);
+            if (read < 8 ||
+                magic[0] != (byte)'V' || magic[1] != (byte)'R' || magic[2] != (byte)'F' || magic[3] != (byte)'1' ||
+                BinaryPrimitives.ReadInt32BigEndian(magic[4..]) != 1)
+                return null; // 旧格式或损坏 → 回退重新生成
+
+            // 2. 读索引区定位 chunk
+            int localX = vcPos.X & (Constants.REGION_SIZE - 1);
+            int localY = vcPos.Y & (Constants.REGION_SIZE - 1);
+            int localZ = vcPos.Z & (Constants.REGION_SIZE - 1);
+            int headerOffset = (localX + localY * Constants.REGION_SIZE + localZ * Constants.REGION_SIZE * Constants.REGION_SIZE) * 4;
+
+            fs.Seek(SimpleRegionWriter.FORMAT_MAGIC_SIZE + headerOffset, SeekOrigin.Begin);
+            Span<byte> entry = stackalloc byte[4];
+            if (fs.Read(entry) < 4) return null;
+
+            uint sectorOffset = ((uint)entry[0] << 16) | ((uint)entry[1] << 8) | entry[2];
+            int sectorCount = entry[3];
+            if (sectorCount == 0) return null; // 该 chunk 从未保存
+
+            // 3. 读数据扇区：4B 压缩长度 + 压缩数据
+            fs.Seek(SimpleRegionWriter.FORMAT_MAGIC_SIZE + SimpleRegionWriter.INDEX_SIZE + sectorOffset * Constants.SECTOR_SIZE, SeekOrigin.Begin);
+            Span<byte> lenBuf = stackalloc byte[4];
+            if (fs.Read(lenBuf) < 4) return null;
+            int compressedLen = BinaryPrimitives.ReadInt32BigEndian(lenBuf);
+            if (compressedLen <= 0 || compressedLen > sectorCount * Constants.SECTOR_SIZE - 4) return null; // 越界防护
+
+            byte[] compressed = new byte[compressedLen];
+            if (fs.Read(compressed, 0, compressedLen) < compressedLen) return null;
+
+            // 4. 解压 → uint[,,] → Block[,,]
+            uint[,,] raw = ZlibChunkCompressor.Decompress(compressed);
+            Block[,,] blocks = new Block[Constants.CHUNK_SIZE, Constants.CHUNK_SIZE, Constants.CHUNK_SIZE];
+            for (int x = 0; x < Constants.CHUNK_SIZE; x++)
+                for (int y = 0; y < Constants.CHUNK_SIZE; y++)
+                    for (int z = 0; z < Constants.CHUNK_SIZE; z++)
+                        blocks[x, y, z] = raw[x, y, z]; // uint → Block 隐式转换
+
+            return blocks;
+        }
+        catch (Exception)
+        {
+            return null; // 文件缺失/IO 错误 → 回退重新生成（存档是优化，非正确性依赖）
+        }
     }
 
     public void Dispose()
@@ -223,16 +276,21 @@ public class Saver
         try { _workerTask?.Wait(); } catch (AggregateException) { }
         _signal.Dispose();
         GC.SuppressFinalize(this);
+
+        if (_failedCount > 0)
+            Debug.LogError($"[Saver] 本次会话共 {_failedCount} 个 chunk 保存失败，存档可能不完整。");
     }
 }
 
 public class SimpleRegionWriter : IDisposable
 {
-    private const int SECTOR_SIZE = 4096;
-    private const int HEADER_SIZE = 32 * 32 * 32 * 4;
+    // .vrf 文件布局：8B 版本头（magic "VRF1" + int32 version=1）→ 索引区（32³ × 4B）→ 数据扇区
+    internal const int FORMAT_MAGIC_SIZE = 8; // "VRF1" 4B + version 4B
+    internal const int INDEX_SIZE = Constants.REGION_SIZE * Constants.REGION_SIZE * Constants.REGION_SIZE * 4;
+    private const int HEADER_SIZE = FORMAT_MAGIC_SIZE + INDEX_SIZE; // 文件头总长（版本头 + 索引区）
 
     private readonly FileStream _stream;
-    private readonly byte[] _header = new byte[HEADER_SIZE];
+    private readonly byte[] _header = new byte[INDEX_SIZE];
 
     private readonly Vector3Int _regionPos;
 
@@ -251,16 +309,23 @@ public class SimpleRegionWriter : IDisposable
         if (!Directory.Exists(dir))
             Directory.CreateDirectory(dir);
 
-        _stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.Read);
-        _stream.Write(_header, 0, HEADER_SIZE);
+        // FileShare.ReadWrite：读路径（TryLoadVoxelChunk）需与写并发打开同一文件
+        _stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+
+        // 写版本头（magic "VRF1" + version = 1，big-endian）
+        Span<byte> magic = stackalloc byte[FORMAT_MAGIC_SIZE];
+        magic[0] = (byte)'V'; magic[1] = (byte)'R'; magic[2] = (byte)'F'; magic[3] = (byte)'1';
+        BinaryPrimitives.WriteInt32BigEndian(magic[4..], 1);
+        _stream.Write(magic);
+        _stream.Write(_header, 0, INDEX_SIZE);
     }
 
     public void WriteVoxelChunk(int localX, int localY, int localZ, byte[] compressedData)
     {
         int totalBytes = 4 + compressedData.Length;
-        byte sectorCount = (byte)Math.Ceiling(totalBytes / (double)SECTOR_SIZE);
+        byte sectorCount = (byte)Math.Ceiling(totalBytes / (double)Constants.SECTOR_SIZE);
 
-        long writePos = HEADER_SIZE + (long)_nextFreeSector * SECTOR_SIZE;
+        long writePos = HEADER_SIZE + (long)_nextFreeSector * Constants.SECTOR_SIZE;
         _stream.Seek(writePos, SeekOrigin.Begin);
 
         Span<byte> lenBuf = stackalloc byte[4];
@@ -269,11 +334,11 @@ public class SimpleRegionWriter : IDisposable
         _stream.Write(compressedData);
 
         // 补0对齐
-        int padding = sectorCount * SECTOR_SIZE - totalBytes;
+        int padding = sectorCount * Constants.SECTOR_SIZE - totalBytes;
         if (padding > 0)
             _stream.Write(new byte[padding], 0, padding);
 
-        int headerOffset = (localX + localY * 32 + localZ * 32 * 32) * 4;
+        int headerOffset = (localX + localY * Constants.REGION_SIZE + localZ * Constants.REGION_SIZE * Constants.REGION_SIZE) * 4;
         _header[headerOffset + 0] = (byte)((_nextFreeSector >> 16) & 0xFF);
         _header[headerOffset + 1] = (byte)((_nextFreeSector >> 8) & 0xFF);
         _header[headerOffset + 2] = (byte)(_nextFreeSector & 0xFF);
@@ -284,8 +349,8 @@ public class SimpleRegionWriter : IDisposable
 
     public void Flush()
     {
-        _stream.Seek(0, SeekOrigin.Begin);
-        _stream.Write(_header, 0, HEADER_SIZE);
+        _stream.Seek(FORMAT_MAGIC_SIZE, SeekOrigin.Begin); // 版本头在构造时已写，此处只重写索引区
+        _stream.Write(_header, 0, INDEX_SIZE);
         _stream.Flush(true); // fsync确保落盘
     }
 
@@ -302,20 +367,21 @@ public class SimpleRegionWriter : IDisposable
 
 public static class ZlibChunkCompressor
 {
-    private const int RawDataSize = 16 * 16 * 16 * sizeof(uint);
+    private const int RawDataSize = Constants.CHUNK_VOLUME * sizeof(uint);
 
     public static byte[] Compress(uint[,,] chunkData, System.IO.Compression.CompressionLevel level = System.IO.Compression.CompressionLevel.Fastest)
     {
-        if (chunkData.Length != 4096)
-            throw new ArgumentException("Expected uint[16,16,16]");
+        if (chunkData.Length != Constants.CHUNK_VOLUME)
+            throw new ArgumentException($"Expected uint[{Constants.CHUNK_SIZE},{Constants.CHUNK_SIZE},{Constants.CHUNK_SIZE}]");
 
-        uint[] chunk = new uint[16 * 16 * 16]; // 4096 elements
+        uint[] chunk = new uint[Constants.CHUNK_VOLUME]; // CHUNK_VOLUME elements
 
-        static int Index(int x, int y, int z) => (x << 8) | (y << 4) | z;
+        // 块内线性索引：x 高 8 位、y 中 4 位、z 低 4 位（与 .vrf 扇区布局一致）
+        static int Index(int x, int y, int z) => (x << (Constants.CHUNK_SIZE_LOG2 * 2)) | (y << Constants.CHUNK_SIZE_LOG2) | z;
 
-        for (int z = 0; z < 16; z++)
-            for (int y = 0; y < 16; y++)
-                for (int x = 0; x < 16; x++)
+        for (int z = 0; z < Constants.CHUNK_SIZE; z++)
+            for (int y = 0; y < Constants.CHUNK_SIZE; y++)
+                for (int x = 0; x < Constants.CHUNK_SIZE; x++)
                 {
                     chunk[Index(x, y, z)] = chunkData[x, y, z];
                 }
@@ -331,37 +397,11 @@ public static class ZlibChunkCompressor
 
         return output.ToArray();
     }
-    public static byte[] Compress(Block[,,] chunkData, System.IO.Compression.CompressionLevel level = System.IO.Compression.CompressionLevel.Fastest)
-    {
-        if (chunkData.Length != 4096)
-            throw new ArgumentException("Expected uint[16,16,16]");
 
-        uint[] chunk = new uint[16 * 16 * 16]; // 4096 elements
-
-        static int Index(int x, int y, int z) => (x << 8) | (y << 4) | z;
-
-        for (int z = 0; z < 16; z++)
-            for (int y = 0; y < 16; y++)
-                for (int x = 0; x < 16; x++)
-                {
-                    chunk[Index(x, y, z)] = (uint)chunkData[x, y, z];
-                }
-
-        ReadOnlySpan<byte> rawBytes = MemoryMarshal.AsBytes(chunk.AsSpan());
-
-        // 2. 使用 MemoryStream + DeflateStream 进行压缩
-        using var output = new MemoryStream(RawDataSize); // 预分配原始大小作为初始容量
-        using (var deflate = new DeflateStream(output, level, leaveOpen: true))
-        {
-            deflate.Write(rawBytes);
-        }
-
-        return output.ToArray();
-    }
-
+    // 解压：与 Compress 对称（raw deflate，非 zlib 封装）
     public static uint[,,] Decompress(byte[] compressed)
     {
-        uint[] rawResult = new uint[16 *  16 * 16];
+        uint[] rawResult = new uint[Constants.CHUNK_VOLUME];
         Span<byte> rawBytes = MemoryMarshal.AsBytes(rawResult.AsSpan());
 
         using var input = new MemoryStream(compressed);
@@ -378,10 +418,10 @@ public static class ZlibChunkCompressor
         if (totalRead != RawDataSize)
             throw new InvalidDataException($"Decompressed size mismatch: got {totalRead}, expected {RawDataSize}");
 
-        uint[,,] result = new uint[16, 16, 16];
-        for (int i = 0; i < 4096; i++)
+        uint[,,] result = new uint[Constants.CHUNK_SIZE, Constants.CHUNK_SIZE, Constants.CHUNK_SIZE];
+        for (int i = 0; i < Constants.CHUNK_VOLUME; i++)
         {
-            result[i >> 8, (i >> 4) & 0xF, i & 0xF] = rawResult[i];
+            result[i >> (Constants.CHUNK_SIZE_LOG2 * 2), (i >> Constants.CHUNK_SIZE_LOG2) & (Constants.CHUNK_SIZE - 1), i & (Constants.CHUNK_SIZE - 1)] = rawResult[i];
         }
 
         return result;

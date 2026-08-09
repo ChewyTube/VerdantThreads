@@ -9,11 +9,13 @@ public struct VoxelChunkData
     VCPosInWorld pos;
     List<(BlockPosInWorld, Block)> pendingBlocks;
 
-    public VoxelChunkData(Block[,,] blocks, VCPosInWorld pos, List<(BlockPosInWorld, Block)> pendingBlocks)
+    public VoxelChunkData(Block[,,] blocks, VCPosInWorld pos, List<(BlockPosInWorld, Block)> pendingBlocks, bool fillAir = true)
     {
         this.blocks = blocks;
         this.pos = pos;
         this.pendingBlocks = pendingBlocks;
+
+        if (!fillAir) return; // 读路径（存档加载）数据已就绪，跳过 Air 填充
 
         int CHUNK_SIZE = Constants.CHUNK_SIZE;
 

@@ -58,7 +58,8 @@ public readonly struct BlockPosInVoxelChunk : IEquatable<BlockPosInVoxelChunk>
 
     public override int GetHashCode()
     {
-        return (X << 8) | (Y << 4) | Z;
+        // 块内坐标 → 单 int 哈希（x 高 8 位、y 中 4 位、z 低 4 位，与 CHUNK_SIZE_LOG2 一致）
+        return (X << (Constants.CHUNK_SIZE_LOG2 * 2)) | (Y << Constants.CHUNK_SIZE_LOG2) | Z;
     }
 
     public override string ToString() => $"Local({X}, {Y}, {Z})";
