@@ -119,3 +119,6 @@ InitTestScene*.unity*
 *.p12
 secrets.*
 
+# 项目状态快照（频繁更新的交接文档，不入库）
+project-status/
+

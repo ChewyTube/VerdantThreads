@@ -4,10 +4,13 @@ using UnityEngine;
 
 public class MeshData
 {
-    private List<Vector3> vertices = new List<Vector3>();
-    private List<int> triangles = new List<int>();
-    private List<Vector2> uvs = new List<Vector2>();
-    private List<Vector3> normals = new List<Vector3>();
+    private List<Vector3> vertices;
+    private List<int> triangles;
+    private List<Vector2> uvs;
+    private List<Vector3> normals;
+
+    public long Seq;     // 构建代次（同一 chunk 实例内单调递增，用于丢弃乱序上传的旧 mesh）
+    public long ChunkId; // 所属 chunk 实例 ID（用于丢弃已卸载/已重建 chunk 的过期上传）
 
 
     // 图集配置
@@ -17,10 +20,19 @@ public class MeshData
     private int sizePerTexture;
     private int totalSize;
 
-    public MeshData()
+    public MeshData() : this(256)
+    {
+    }
+
+    public MeshData(int initialCapacity)
     {
         sizePerTexture = pixelPerTexture + 2 * padding;
         totalSize = atlasSize * sizePerTexture;
+
+        vertices = new List<Vector3>(initialCapacity);
+        triangles = new List<int>(initialCapacity * 3 / 2);
+        uvs = new List<Vector2>(initialCapacity);
+        normals = new List<Vector3>(initialCapacity);
     }
 
     // 按 VoxelChunk.Direction 语义映射（North=+Z、South=-Z），与 FaceIndex 数值标签相反
@@ -86,30 +98,12 @@ public class MeshData
 
     private Vector2 GetUVOffset(BlockType blockType, int faceIndex=2)
     {
-        // Vector2Int uvIndex = BlockUVMap.GetUVIndex(blockType);
         Vector2Int uvIndex = BlockUVMap.GetUV(blockType, faceIndex);
 
-        if (uvIndex == null)
-        {
-            uvIndex = BlockUVMap.GetUV(BlockType.ERROR, faceIndex);
-        }
+        float u = 1f / totalSize * ((sizePerTexture * uvIndex.x) + padding);
+        float v = 1f / totalSize * ((sizePerTexture * uvIndex.y) + padding);
 
-        Vector2 uv = new(0, 0);
-        if(!DataBuffer.Instance.Block2uvs.TryGetValue((blockType, faceIndex), out uv))
-        {
-            float u = 1f / totalSize * ((sizePerTexture * uvIndex.x) + padding);
-            float v = 1f / totalSize * ((sizePerTexture * uvIndex.y) + padding);
-
-            uv = new(u, v);
-
-            DataBuffer.Instance.Block2uvs[(blockType, faceIndex)] = uv;
-        }
-        else
-        {
-            // Debug.Log($"uv found:{blockType} -> {uv}");
-        }
-
-        return uv;
+        return new(u, v);
     }
 
     private Vector2[] GetFaceUVs(Vector2 offset, Direction dir)

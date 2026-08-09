@@ -63,7 +63,7 @@
 
 - [x] **P2-1 每帧"64 块"上限实际按 List 条数计数** — `World.cs:116-124`：`setCount++` 在外层 while，内层 `foreach` 整条 List 无上限。一条 pendingBlocks List 可含数十个跨界叶子写入，一帧最多 64 条 List ≈ 上千次 `Setblock`（每次可能触发同步建 chunk）。建议按块数截断，队列尾部留到下帧。
 - [x] **P2-2 `Setblock` 路径双重 enqueue pendingBlocks** — `World.cs:306-307`（生成内部已入队）与 `:377`/`:401`（又入队同一 List 引用）→ 写入全部翻倍（幂等但浪费）。删掉 `Setblock` 里那一次即可。
-- [ ] **P2-3 mesh 每重建 = 3 次 ToArray + `new Mesh` + `RecalculateNormals`，每 chunk 最多重建 3 次** — `MeshData.cs:114-126` + `VoxelChunk.cs:110-133`：受树影响的 chunk 经历 Start 首次构建 → pendingBlocks 重放 → MeshOptimize 共 3 次全量重建；旧 Mesh 悬挂到 GC（Unity native 对象回收不确定）。建议复用同一 Mesh 实例，`SetVertices/SetTriangles/SetUVs` 原地写，`RecalculateNormals` 按需。
+- [x] **P2-3 mesh 每重建 = 3 次 ToArray + `new Mesh` + `RecalculateNormals`，每 chunk 最多重建 3 次** — `MeshData.cs:114-126` + `VoxelChunk.cs:110-133`：受树影响的 chunk 经历 Start 首次构建 → pendingBlocks 重放 → MeshOptimize 共 3 次全量重建；旧 Mesh 悬挂到 GC（Unity native 对象回收不确定）。建议复用同一 Mesh 实例，`SetVertices/SetTriangles/SetUVs` 原地写，`RecalculateNormals` 按需。
 - [x] **P2-4 卸载时主线程同步保存 + 每 chunk fsync** — `World.cs:226` → `Saver.cs:145-161` → `Saver.cs:221-226`（`Flush(true)` 即 fsync + 每次重写 128KB header）。相机大步移动时一次卸载数十 chunk = 主线程数十次磁盘 fsync。建议恢复被注释的 `AsyncSaver`（`Saver.cs:22-120`）或批量 flush。
 - [x] **P2-5 FileStream 永不 Dispose** — `Saver.cs:123`（`_regionWriters`）+ `Saver.cs:228-236`（`Dispose` 从未被调用）。每探索一个新 region 泄漏一个 `FileStream`。建议 `World.OnDestroy` 遍历 Dispose。
 - [ ] **P2-6 MeshOptimize 队列积压** — `World.cs:21`（2/帧）+ `:458`：初始 864 chunk 全入队，2/帧消费 → 初始积压约 7 秒（@60fps），期间边界不剔除，世界显"臃肿"。与 P1-2 一并按帧耗时预算调整。
@@ -115,7 +115,7 @@
 
 | 顺序 | 内容 | 风险 | 工作量 |
 |---|---|---|---|
-| 11 | **P2-3** chunk 复用单个 Mesh 实例 + 原地写顶点/索引 + 按需 `RecalculateNormals` | 中（mesh 生命周期管理） | 中 |
+| 11 | **P2-3** chunk 复用单个 Mesh 实例 + 原地写顶点/索引 + 按需 `RecalculateNormals` ✅ | 中（mesh 生命周期管理） | 中 |
 | 12 | **P2-4** 恢复后台 `AsyncSaver`（注意 FileStream 线程安全与 Dispose 收敛）或批量 flush | 中 | 中 |
 | 13 | **P2-6** 按帧耗时预算动态调整构建/优化上限，替代固定 2/帧 ✅ | 低 | 小 |
 
@@ -126,7 +126,7 @@
 | 14 | Saver 明确"写-only"定位或补读路径；.vrf 格式加版本头 |
 | 15 | World.cs 拆分：ChunkStreamer / TerrainGenerator / ChunkStore |
 | 16 | 单例 → 场景显式引用/注入；相机出生点改 SerializeField（P3-10） |
-| 17 | 清理死代码：`GenerateVoxelChunk`（P3-1）、`CreateEmptyVoxelChunk`、`Decompress`（P3-11）、注释掉的 AsyncSaver、`BasicTree`（P3-12）、`uvIndex == null`（P3-6）等 |
+| 17 | 清理死代码：`GenerateVoxelChunk`（P3-1）、`Decompress`（P3-11）、注释掉的 AsyncSaver、`BasicTree`（P3-12）、`uvIndex == null`（P3-6）、`TryGetBlock`（A2 后已无调用方）、`Setblock(int,int,int)` 死重载等 |
 | 18 | P3-2 / P3-3 / P3-4 修复（状态位、方向语义、ERROR 魔数）——**等方向性纹理需求出现前可一直拖着** |
 | 19 | `Constants.CHUNK_SIZE` 贯通 Saver/压缩器（P3-14） |
 

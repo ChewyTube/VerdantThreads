@@ -15,9 +15,12 @@ public class VoxelChunk : MonoBehaviour
 
     Block[,,] blocks;
 
-    MeshData meshData;
-
     Mesh mesh;
+
+    private static long _nextInstanceId;
+    public long InstanceId { get; private set; }   // 实例唯一 ID（用于丢弃过期上传）
+    private long _buildSeq;                         // 下次构建代次
+    private long _appliedMeshSeq;                   // 已应用的最大构建代次
 
     bool initialized = false;
     bool changed = false;
@@ -26,6 +29,8 @@ public class VoxelChunk : MonoBehaviour
 
     void Awake()
     {
+        InstanceId = ++_nextInstanceId;
+
         int CHUNK_SIZE = Constants.CHUNK_SIZE;
 
         blocks = new Block[
@@ -34,8 +39,6 @@ public class VoxelChunk : MonoBehaviour
             Constants.CHUNK_SIZE];
 
         // CreateSinglePlaneVoxelChunk();
-
-        meshData = new MeshData();
 
         meshFilter = gameObject.AddComponent<MeshFilter>();
         meshRenderer = gameObject.AddComponent<MeshRenderer>();
@@ -75,7 +78,7 @@ public class VoxelChunk : MonoBehaviour
 
         meshRenderer.sharedMaterial = blockMaterial;
 
-        // mesh 构建已交给 World 的预算队列（MeshOptimize），此处不再同步构建
+        // mesh 构建已交给 World 的预算队列，此处不再同步构建
     }
 
     void Update()
@@ -102,42 +105,26 @@ public class VoxelChunk : MonoBehaviour
                 //SetBlock(BlockRegistry.Grass, x, x * z % 16, z);
             }
 
-        UpdateOrCreateMesh(true);
+        World.Instance?.RequestMeshRebuild(pos);
     }
 
-    public void MeshOptimize()
+    // 主线程调用：为本次后台 mesh 构建分配递增代次
+    public long TakeBuildSeq() => ++_buildSeq;
+
+    // 主线程调用：把后台生成的 MeshData 写入复用的 Mesh 实例
+    public void ApplyMeshData(MeshData meshData)
     {
-        UpdateOrCreateMesh(false);
-    }
-
-    private void UpdateOrCreateMesh(bool firstLoad)
-    {
-        int CHUNK_SIZE = Constants.CHUNK_SIZE;
-
-        meshData.Clear();
-
-        for (int x = 0; x < CHUNK_SIZE; x++)
-            for (int y = 0; y < CHUNK_SIZE; y++)
-                for (int z = 0; z < CHUNK_SIZE; z++)
-                {
-                    var blockType = blocks[x, y, z].GetBlockType();
-                    if (blockType != BlockType.Air && blockType != BlockType.Void)
-                    {
-                        TryAddFace(meshData, x, y, z, Direction.Up      , firstLoad);
-                        TryAddFace(meshData, x, y, z, Direction.Down    , firstLoad);
-                        TryAddFace(meshData, x, y, z, Direction.North   , firstLoad);
-                        TryAddFace(meshData, x, y, z, Direction.South   , firstLoad);
-                        TryAddFace(meshData, x, y, z, Direction.East    , firstLoad);
-                        TryAddFace(meshData, x, y, z, Direction.West    , firstLoad);
-                    }
-                }
+        // 丢弃已卸载/已重建 chunk 的过期上传（实例 ID 不匹配）
+        if (meshData.ChunkId != InstanceId) return;
+        // 丢弃乱序完成的旧代次构建，保证 mesh 收敛到最新数据
+        if (meshData.Seq <= _appliedMeshSeq) return;
+        _appliedMeshSeq = meshData.Seq;
 
         if (mesh == null) mesh = new Mesh();
         meshData.FillMesh(mesh);
         meshFilter.mesh = mesh;
     }
 
-    
     public void Initialize(VCPosInWorld p)
     {
         pos = p;
@@ -151,6 +138,43 @@ public class VoxelChunk : MonoBehaviour
         blocks = blockdata;
 
         initialized = true;
+    }
+
+    // 池化复用：新生命周期新身份（让上一世在途上传被 ChunkId 守卫丢弃），并重置状态
+    public void ResetForReuse(VCPosInWorld p, Block[,,] blockdata)
+    {
+        InstanceId = ++_nextInstanceId;
+        _buildSeq = 0;
+        _appliedMeshSeq = 0;
+
+        pos = p;
+        blocks = blockdata;
+        initialized = true;
+        changed = false;
+        isEmpty = false;
+
+        if (mesh != null) mesh.Clear(); // 清掉上一世残留 mesh，防止复用为空区块时渲染旧内容
+    }
+
+    // 归还池前清理：断数组引用、隐藏 GO；材质保留（Start 只跑一次，复用后必须保留）
+    public void PrepareForPool()
+    {
+        if (mesh != null) mesh.Clear();
+        gameObject.SetActive(false);
+        blocks = null;
+        initialized = false;
+        changed = false;
+        isEmpty = false;
+        pos = default;
+    }
+
+    // 静态 Air 填充辅助（供 CreateEmptyVoxelChunk 复用池化数组）
+    public static void FillAir(Block[,,] arr)
+    {
+        for (int x = 0; x < Constants.CHUNK_SIZE; x++)
+            for (int y = 0; y < Constants.CHUNK_SIZE; y++)
+                for (int z = 0; z < Constants.CHUNK_SIZE; z++)
+                    arr[x, y, z] = BlockRegistry.Air;
     }
     public void SetBlock(Block block, int x,  int y, int z)
     {
@@ -174,92 +198,6 @@ public class VoxelChunk : MonoBehaviour
     {
         return blocks;
     }
-
-    private void TryAddFace(MeshData meshData, int x, int y, int z, Direction dir, bool firstLoad)
-    {
-        int CHUNK_SIZE = Constants.CHUNK_SIZE;
-
-        // Vector3Int neighborPos = GetNeighborPos(x, y, z, dir);
-        
-        if (!ShouldBeEliminated(x, y, z, dir, firstLoad))
-        {
-            int xInWorld = x + pos.X * CHUNK_SIZE;
-            int yInWorld = y + pos.Y * CHUNK_SIZE;
-            int zInWorld = z + pos.Z * CHUNK_SIZE;
-
-            meshData.AddFace(xInWorld, yInWorld, zInWorld, dir, blocks[x, y, z]);
-        }
-    }
-
-    private Vector3Int GetNeighborPos(int x, int y, int z, Direction dir)
-    {
-        return dir switch
-        {
-            Direction.Up => new Vector3Int(x, y + 1, z),
-            Direction.Down => new Vector3Int(x, y - 1, z),
-            Direction.North => new Vector3Int(x, y, z + 1),
-            Direction.South => new Vector3Int(x, y, z - 1),
-            Direction.East => new Vector3Int(x + 1, y, z),
-            Direction.West => new Vector3Int(x - 1, y, z),
-            _ => new Vector3Int(x, y, z)
-        };
-    }
-
-    private bool ShouldBeEliminated(int x, int y, int z, Direction dir, bool firstLoad)
-    {
-        int CHUNK_SIZE = Constants.CHUNK_SIZE;
-        Vector3Int neighborPos = GetNeighborPos(x, y, z, dir);
-
-        int nx = neighborPos.x;
-        int ny = neighborPos.y;
-        int nz = neighborPos.z;
-
-        BlockType bt = blocks[x, y, z].GetBlockType();
-        BlockType neighborBt;
-
-        if
-            (
-            nx < 0 || nx >= CHUNK_SIZE ||
-            ny < 0 || ny >= CHUNK_SIZE ||
-            nz < 0 || nz >= CHUNK_SIZE
-            )
-        {
-            if (firstLoad)
-            {
-                return false;
-            }
-
-            int nxInWorld = nx + pos.X * CHUNK_SIZE;
-            int nyInWorld = ny + pos.Y * CHUNK_SIZE;
-            int nzInWorld = nz + pos.Z * CHUNK_SIZE;
-
-            World.Instance.TryGetBlock(new(nxInWorld, nyInWorld, nzInWorld), out neighborBt);
-
-            if(neighborBt == BlockType.ERROR)
-            {
-                // Debug.Log($"failed to get block at{nx}, {ny}, {nz}");
-                return false;
-            }
-            // Debug.Log($"successed to get block at {nx}, {ny}, {nz} -> {neighborBt}");
-        }
-        else
-        {
-            neighborBt = blocks[nx, ny, nz].GetBlockType();
-        }
-
-
-        if(neighborBt == BlockType.Air || neighborBt == BlockType.Void)
-        {
-            return false;
-        }
-        if(bt == BlockType.Leaves || neighborBt == BlockType.Leaves)
-        {
-            return false;
-        }
-        
-        return true;
-    }
-
 
     public VCPosInWorld GetVCPosInWorld()
     {

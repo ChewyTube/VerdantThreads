@@ -2,7 +2,7 @@
 
 > 目标：视距从 6 提升到 12；保持平时 ~200fps；地形加载时帧率不掉到 30 以下。
 > 前提判断：平时 200fps 说明渲染 / draw call 余量巨大；30fps 仅出现在加载新地形时 → 瓶颈是**加载路径的主线程工作量**（chunk 对象创建、mesh 上传、GC）。因此本期**不做网格合并 / LOD**。
-> 实施状态：2026-08-09 —— ①、⑥、⑦ 已实现并复核；②-⑤ 待实施。
+> 实施状态：2026-08-09 —— ①②③⑥⑦ 已实现并复核；④ 已实现（2026-08-09）；⑤ 待实施。
 
 ## 现状量化
 
@@ -22,15 +22,20 @@
 - 改动点：`OnCameraChunkChanged` 卸载判定与 spawn 循环、`IsWithinViewDistance`、`GenerateWorld` 的 Y 循环。
 - 效果：加载量 10.6k → ~4.4k，每次跨 chunk 的 spawn/卸载量减半以上，加载压力接近 l=6 水平。
 
-### ② mesh 数据生成移出主线程（待实施）
-`UpdateOrCreateMesh` 的剔除扫描 + 顶点/UV/法线生成是纯数学（只读 Block 数组），搬到 worker 线程生成 `MeshData`，主线程只做 `Mesh.SetVertices/SetTriangles/SetUVs/SetNormals` 上传（仍在帧预算队列内）。
-- 效果：单 chunk 主线程成本降到只剩上传 ~1-3ms，加载帧不再被单个 chunk 的完整构建卡住。
+### ② mesh 数据生成移出主线程 ✅ 已实现
+新增 `ChunkMeshBuilder`：主线程对本地块 + 6 方向邻居边界面拍纯数据快照（`MeshBuildData`），worker 线程只读快照生成 `MeshData`（剔除扫描 + 顶点/UV/法线），主线程仅做 `Mesh.SetVertices/SetTriangles/SetUVs/SetNormals` 上传（帧预算队列内）。`MeshData` 移除 `DataBuffer` 缓存依赖（UV 改纯计算）。
+- 线程安全：worker 不触碰 `world`/`blocks`/Unity 对象；乱序上传用"实例 ID + 构建代次"守卫丢弃过期 mesh。
+- 效果：单 chunk 主线程成本降到只剩上传 ~0.1-0.2ms，加载帧不再被单个 chunk 的完整构建卡住。
 
-### ③ Chunk 对象池（待实施）
-加载/卸载复用 GameObject 与 `VoxelChunk` 组件，消除 `new GameObject` + `AddComponent` 与 `Destroy` 的每帧成本；顺带修掉 `Awake` 里"分配 Block[16,16,16] 填 Air 又被 `Initialize` 覆盖"的浪费数组。
-- 效果：加载/卸载风暴时主线程分配与销毁开销大降，减少 GC。
+### ③ Chunk 对象池 ✅ 已实现
+`World` 持两个主线程独享的池：`_chunkPool`（chunk GameObject + `VoxelChunk` 组件）与 `_blockArrayPool`（16³ `Block[,,]` 数组），上限 8192（= 视距盒 25×13×25）。
+- Phase1：创建路径池优先（命中则 `SetActive(true)` + 改名 + `ResetForReuse`），卸载路径 `ReturnChunkToPool`（`PrepareForPool` 清残留 mesh/断引用/置空状态，但**保留材质**——Start 只跑一次，池化复用后不重跑）。
+- Phase2：`SpawnChunkDataGeneration` 主线程取池化数组、worker 直接写入（`VoxelChunkData` 构造器自带 Air 填充）；构建循环的"已加载/超视距/空区块"三个分支归还数组、创建分支转移所有权、卸载路径归还。
+- 关键不变量：池与数组所有读写严格主线程（`TakeBlockArray` 在 `Task.Run` 之前）；`ResetForReuse` 刷新 `InstanceId` 并归零 seq，上一世在途 mesh 上传被 A2 的 ChunkId 守卫丢弃；池满回退 `DestroySelf` 封顶内存。
+- 效果：消除加载/卸载风暴的 `new GameObject`/`AddComponent`/`Destroy` 与 16KB×N 数组 GC 轮换，高速移动帧更稳。
+- 遗留 P3（可接受）：worker 生成异常路径数组不进池（catch 在后台线程，不能碰非线程安全 Stack；该路径实际不可达、泄漏有界）；池满溢出的数组由 GC 回收。
 
-### ④ 近处优先 + 只补新暴露环（待实施）
+### ④ 近处优先 + 只补新暴露环 ✅ 已实现
 - 构建/上传队列按到相机距离排序（按距离环分桶），视野内先填满，pop-in 从近到远。
 - `OnCameraChunkChanged` 只 spawn 新暴露的位置，并用"已 spawn 未构建"集合避免对同一位置重复 `Task.Run`（当前整盒扫描 + `ContainsKey` 只看已创建，会造成重复生成）。
 
@@ -47,7 +52,7 @@ l=12 时每次跨 chunk 卸载 ~175-425 个，入队 16KB×N；worker 受 fsync 
 
 ## 实施顺序
 
-① → ⑦ → ② → ③/④ → ⑤（①⑥⑦ 已落地）
+① → ⑦ → ② → ③/④ → ⑤（①②③⑥⑦ 已落地）
 
 ## 明确不做（本期）
 
