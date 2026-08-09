@@ -510,35 +510,44 @@ public class World : MonoBehaviour
 
                 if (HasTree(blockX, baseHeight + 4, blockZ) && (baseHeight + 4 < maxY) && (baseHeight + 4) >= (maxY - CHUNK_SIZE))
                 {
-                    int treeHeight = x * z % 6 + 1;
+                    // 香樟风球冠树：树干下部裸露、上部穿入球状树冠（确定性伪随机，保持固定 seed 的确定性）
                     int realY = (baseHeight + 4) % 16;
 
+                    int trunkHeight = (x * 31 + z * 17) % 3 + 4;  // 树干 4-6 格
+                    int crownRadius = (x * 7 + z * 11) % 2 + 3;   // 树冠水平半径 3-4 格
+                    int trunkTop = realY + trunkHeight;           // 树干顶
+                    int crownCenterY = trunkTop + crownRadius - 2; // 球心：树干顶深入球内 2 格
+                    int crownBottom = crownCenterY - crownRadius;  // 树冠底（树干下部裸露 2 格后展开）
+                    int crownTop = crownCenterY + crownRadius;
 
-                    for (int i = realY; i < realY + treeHeight + 1; i++)
+                    // 树干（下部裸露，上部被树冠包裹）
+                    for (int i = realY; i < trunkTop; i++)
                     {
                         data.Setblock(BlockRegistry.Log, x, i, z);
-
-                        if(i <= realY + realY % 2)
-                        {
-                            continue;
-                        }
-
-                        for(int j = -2; j<=2; j++) 
-                            for(int k = -2; k<=2; k++)
-                            {
-                                if(!((j == 0 && k == 0) || (Math.Abs(j*k) == 4)))
-                                {
-                                    data.Setblock(BlockRegistry.Leaves, x, i, z, j, 0, k);
-                                }
-                            }
                     }
 
-                    data.Setblock(BlockRegistry.Leaves, x, realY + treeHeight + 1, z);
-                    data.Setblock(BlockRegistry.Leaves, x, realY + treeHeight + 1, z, -1, 0,  0);
-                    data.Setblock(BlockRegistry.Leaves, x, realY + treeHeight + 1, z,  1, 0,  0);
-                    data.Setblock(BlockRegistry.Leaves, x, realY + treeHeight + 1, z,  0, 0, -1);
-                    data.Setblock(BlockRegistry.Leaves, x, realY + treeHeight + 1, z,  0, 0,  1);
-                } 
+                    // 球状树冠：逐层按球方程取水平半径（向上取整保证饱满），树冠内的树干格保留不盖
+                    for (int layerY = crownBottom; layerY <= crownTop; layerY++)
+                    {
+                        float dy = layerY - crownCenterY;
+                        int layerRadius = (int)Math.Ceiling(Math.Sqrt(crownRadius * crownRadius - dy * dy));
+
+                        for (int j = -layerRadius; j <= layerRadius; j++)
+                        {
+                            for (int k = -layerRadius; k <= layerRadius; k++)
+                            {
+                                int d2 = j * j + k * k;
+                                // 球内填充；树冠内的树干格跳过；边缘格按确定性扰动少量缺角增加自然感
+                                if (d2 <= layerRadius * layerRadius &&
+                                    !(j == 0 && k == 0 && layerY < trunkTop) &&
+                                    !(d2 == layerRadius * layerRadius && (x * 13 + z * 7 + layerY * 3) % 4 == 0))
+                                {
+                                    data.Setblock(BlockRegistry.Leaves, x, layerY, z, j, 0, k);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         
         var blocksToBeSet = data.GetPendingBlocks();
