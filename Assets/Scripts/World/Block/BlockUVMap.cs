@@ -1,17 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public static class FaceIndex
-{
-    public const int East = 0;  // +X
-    public const int West = 1;  // -X
-    public const int Up = 2;    // +Y 
-    public const int Down = 3;  // -Y
-    public const int South = 4; // +Z 
-    public const int North = 5; // -Z
-    public const int Count = 6;
-}
-
 public readonly struct BlockUVSet
 {
     private readonly Vector2Int[] _uvs; // 长度固定为6
@@ -24,14 +13,14 @@ public readonly struct BlockUVSet
         Vector2Int up,      Vector2Int down,
         Vector2Int south,   Vector2Int north)
     {
-        _uvs = new Vector2Int[FaceIndex.Count]
+        _uvs = new Vector2Int[(int)Direction.Count] // 顺序与 Direction 数值一致（south=-Z、north=+Z）
         {
             east, west, up, down, south, north
         };
     }
 
-    /// <summary>无分配地获取指定面的UV</summary>
-    public Vector2Int GetUV(int faceIndex) => _uvs[faceIndex];
+    /// <summary>按 Direction 获取指定面的 UV（无分配）</summary>
+    public Vector2Int GetUV(Direction face) => _uvs[(int)face];
 }
 
 public static class BlockUVMap
@@ -57,23 +46,21 @@ public static class BlockUVMap
             new(1, 5),
             new(0, 5)
         ),
-
-        [BlockType.ERROR] = new(new(1, 0)),
     };
 
 
-    private static readonly BlockUVSet ErrorUV = uvTable[BlockType.ERROR];
+    private static readonly BlockUVSet FallbackUV = new(new(1, 0));
 
-    public static Vector2Int GetUV(BlockType blockType, int faceIndex)
+    public static Vector2Int GetUV(BlockType blockType, Direction face)
     {
         return uvTable.TryGetValue(blockType, out var uvSet)
-            ? uvSet.GetUV(faceIndex)
-            : ErrorUV.GetUV(faceIndex);
+            ? uvSet.GetUV(face)
+            : FallbackUV.GetUV(face);
     }
 
     // 向后兼容
     public static Vector2Int GetUVIndex(BlockType blockType)
     {
-        return GetUV(blockType, FaceIndex.Up);
+        return GetUV(blockType, Direction.Up);
     }
 }

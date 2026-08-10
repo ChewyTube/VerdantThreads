@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Numerics;
 using UnityEngine;
 
-public struct VoxelChunkData
+public class VoxelChunkData
 {
     Block[,,] blocks;
     VCPosInWorld pos;

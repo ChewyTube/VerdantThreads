@@ -228,10 +228,11 @@ public class VoxelChunk : MonoBehaviour
 
 public enum Direction
 {
-    Up = 2, 
-    Down = 3, 
-    North = 5, 
-    South = 4, 
-    East = 0, 
-    West = 1
+    East = 0,  // +X
+    West = 1,  // -X
+    Up = 2,    // +Y
+    Down = 3,  // -Y
+    South = 4, // -Z
+    North = 5, // +Z
+    Count = 6, // 方向总数
 }

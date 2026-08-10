@@ -1,6 +1,7 @@
-# VerdantThreads 任务总表
+# VerdantThreads 任务总表（历史）
 
-> 更新：2026-08-09　|　旧计划文档已归档至 `docs/archive/`（REVIEW.md、VIEW_DISTANCE_PLAN.md）
+> 归档：2026-08-11　|　**历史记录，内容已全部完成**。当前活跃任务见 `docs/status/TODO_LIST.md`。
+> 原始更新：2026-08-10　|　旧计划文档已归档至 `docs/archive/`（REVIEW.md、VIEW_DISTANCE_PLAN.md）
 
 ## 一、已完成 ✅
 
@@ -52,18 +53,18 @@
 | 15 | World.cs 拆分：ChunkStreamer / TerrainGenerator / ChunkStore | P3-12 | ✅ 代码完成（2026-08-09，待 Play Mode 验证）：World 瘦身为 facade（~110 行），新增 TerrainGenerator（生成+读存档）、ChunkStore（存储/池/写入/卸载保存+回调）、ChunkStreamer（队列调度/排序/预算/视距环） |
 | 16 | 单例 → 场景显式引用/注入 | P3-10 | ✅ 已完成（2026-08-09）：相机出生点改 SerializeField（先前）；去单例化：删 World.Instance，BlockInteraction 改序列化引用 + FindObjectOfType 兜底，VoxelChunk 改注入 mesh 重建回调（ChunkStore 构造注入、创建时透传、归还池清空），顺带删除死代码 CreateSinglePlaneVoxelChunk |
 | 17 | 死代码清理：`GenerateVoxelChunk`、`Decompress`、注释掉的 AsyncSaver、`BasicTree` stub、`uvIndex == null`、`TryGetBlock`、`Setblock(int,int,int)` 死重载 | P3-1/3-6/3-11/3-12 | ✅ 已完成（2026-08-09）；`uvIndex == null` 此前已不存在 |
-| 18 | P3-2 状态位 / P3-3 方向语义 / P3-4 ERROR 魔数修复 | P3-2/3-3/3-4 | 等方向性纹理需求出现前可拖 |
+| 18 | P3-2 状态位 / P3-3 方向语义 / P3-4 ERROR 魔数修复 | P3-2/3-3/3-4 | ✅ 已完成（2026-08-10）：P3-2 括号修复（`(_value & StateMask) >> StateShift`）；P3-3 方向语义统一（删 `FaceIndex`，`Direction` 唯一权威 + 语义注释 + `Count`，UV 接口 Direction 化，行为零变化）；P3-4 ERROR 全清理（`BlockUVMap` fallback 改 `FallbackUV`，`GetBlock` fallback 改 throw） |
 | 19 | `Constants.CHUNK_SIZE` 贯通 Saver/压缩器/region 位移 | P3-14 | ✅ 已完成（2026-08-09）：新增 `REGION_SIZE/REGION_SIZE_LOG2/SECTOR_SIZE/CHUNK_VOLUME` 常量；顺带删除无调用方的 `Compress(Block[,,])` 重载 |
 
 ### 低优先级 / 已知遗留
 
 | 项 | 来源 | 备注 |
 |----|------|------|
-| P1-7 共享 FastNoiseLite 并发读——当前只读安全，建议加注释声明 | P1-7 | 防未来踩雷 |
-| P3-5 `VoxelChunkData` 可变 struct 值语义被引用语义破坏 | P3-5 | 改 class 或文档化 |
-| P3-7 `MeshData` 首次 UV miss 的 `Debug.Log` 刷屏（~48 行） | P3-7 | 一次性或删除 |
-| P3-8 UV 数学 768px 虚拟网格 vs 512px 图集 | P3-8 | 不改动，仅注释 |
-| P3-13 树外观低概率瑕疵（悬空/草皮空隙/冠层奇偶/局部坐标） | P3-13 | 低优先级外观 |
+| P1-7 共享 FastNoiseLite 并发读——当前只读安全，建议加注释声明 | P1-7 | ✅ 已完成（2026-08-10）：`TerrainGenerator.noise` 加并发只读声明注释 |
+| P3-5 `VoxelChunkData` 可变 struct 值语义被引用语义破坏 | P3-5 | ✅ 已完成（2026-08-10）：改 class（8 处引用全为引用式用法，无值语义依赖） |
+| P3-7 `MeshData` 首次 UV miss 的 `Debug.Log` 刷屏（~48 行） | P3-7 | ✅ 已完成（2026-08-10）：全项目 Debug.Log 仅剩错误上报与注释行，无刷屏 |
+| P3-8 UV 数学 768px 虚拟网格 vs 512px 图集 | P3-8 | ✅ 已完成（2026-08-10）：MeshData 常量区加 768/512 勿改注释 |
+| P3-13 树外观低概率瑕疵（悬空/草皮空隙/冠层奇偶/局部坐标） | P3-13 | ⏳ 低优先级外观 |
 
 ## 三、待实测验证（Play Mode，静态审查无法确认）
 

@@ -7,6 +7,7 @@ using UnityEngine;
 // 确定性（固定 seed + 位置公式）保证同坐标永远生成同一结果，与存档数据可复现。
 public class TerrainGenerator
 {
+    // 被多个后台生成 Task 并发只读调用（GetNoise），FastNoiseLite 只读线程安全；禁止在后台线程重新配置/写入 noise
     private readonly FastNoiseLite noise = new FastNoiseLite();
     private readonly int seed;
     private readonly Saver saver; // 读路径：生成前先查存档，命中则用已保存数据（含玩家修改）

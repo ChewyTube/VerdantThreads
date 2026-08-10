@@ -46,22 +46,27 @@ public readonly struct Block : IEquatable<Block>
         uint bt = _value & BlockBits.TypeMask;
         return (BlockType)bt;
     }
-    public uint GetBlockState() => _value & BlockBits.StateMask >> BlockBits.StateShift;
+    public uint GetBlockState() => (_value & BlockBits.StateMask) >> BlockBits.StateShift;
 
 
 }
 
+// 块值位布局：
+//   bit0-15  类型（TypeMask）
+//   bit16-17 生长阶段（0=苗 1=开花 2=结荚，豌豆 PeaStem 用）
+//   bit18-24 预留性状位（7 对孟德尔性状各 1 位）
+//   bit25-31 预留
 public static class BlockBits
 {
     public const uint TypeMask   = 0x0000_FFFF;
 
     public const int StateShift  = 16;
-    public const uint StateMask  = 0x000F_0000;
+    public const uint StateMask  = 0xFFFF_0000; // 状态位（bit16 起 16 位）
+    public const uint StageMask  = 0x3;         // 生长阶段（状态位低 2 位）
 }
 
 public enum BlockType : uint
 {
-    ERROR = 114514,
     Void = 0,
     Air = 1,
     Grass = 2,
@@ -70,5 +75,6 @@ public enum BlockType : uint
     Stone = 5,
     Log = 6,
     Leaves = 7,
+    PeaStem = 8,
 }
 

@@ -29,6 +29,7 @@ public class BlockInteraction : MonoBehaviour
                 BlockRegistry.Log,
                 BlockRegistry.Leaves,
                 BlockRegistry.Bedrock,
+                BlockRegistry.PeaSeed,
             };
         }
 

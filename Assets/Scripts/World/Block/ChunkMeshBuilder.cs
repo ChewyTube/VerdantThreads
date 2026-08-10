@@ -78,6 +78,14 @@ public static class ChunkMeshBuilder
                 for (int z = 0; z < s; z++)
                 {
                     var bt = d.Blocks[x, y, z].GetBlockType();
+                    // 豌豆不走六面剔除，直接生成十字面片（高度/贴图随生长阶段）
+                    if (bt == BlockType.PeaStem)
+                    {
+                        int stage = (int)(d.Blocks[x, y, z].GetBlockState() & BlockBits.StageMask);
+                        int xw = x + d.Pos.X * s, yw = y + d.Pos.Y * s, zw = z + d.Pos.Z * s;
+                        meshData.AddPeaQuad(xw, yw, zw, stage);
+                        continue;
+                    }
                     if (bt != BlockType.Air && bt != BlockType.Void)
                     {
                         TryAddFace(meshData, d, x, y, z, Direction.Up);
@@ -144,14 +152,16 @@ public static class ChunkMeshBuilder
 
         if (cross)
         {
-            if (plane == null) return false; // 邻居未加载 → 保留面（与原 ERROR 分支一致）
+            if (plane == null) return false; // 邻居未加载 → 保留面
             neighborBt = plane[i0, i1];
         }
 
         if (neighborBt == BlockType.Air || neighborBt == BlockType.Void) return false;
 
         var bt = d.Blocks[x, y, z].GetBlockType();
+        // 半透明方块（树叶）与不占满格子的豌豆（十字面片）不剔除邻居面：透过它们能看到相邻方块
         if (bt == BlockType.Leaves || neighborBt == BlockType.Leaves) return false;
+        if (bt == BlockType.PeaStem || neighborBt == BlockType.PeaStem) return false;
 
         return true;
     }

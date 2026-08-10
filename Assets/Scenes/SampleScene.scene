@@ -370,6 +370,7 @@ GameObject:
   - component: {fileID: 963194227}
   - component: {fileID: 963194226}
   - component: {fileID: 963194229}
+  - component: {fileID: 963194230}
   m_Layer: 0
   m_HasEditorInfo: 1
   m_Name: Main Camera
@@ -472,6 +473,21 @@ MonoBehaviour:
   mouseSensitivity: 2
   minPitch: -89
   maxPitch: 89
+--- !u!114 &963194230
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 963194225}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9d8834b44c8a43849b12cec5c43c6a70, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  world: {fileID: 0}
+  reachDistance: 8
+  defaultSelectedIndex: 2
 --- !u!1 &1428917356
 GameObject:
   m_ObjectHideFlags: 0
@@ -532,6 +548,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 646651df5d32d3b4d93e4bd3149cc3dd, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  cameraSpawnPos: {x: 0, y: 64, z: 0}
 --- !u!114 &1428917361
 MonoBehaviour:
   m_ObjectHideFlags: 0
