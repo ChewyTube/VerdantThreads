@@ -49,8 +49,8 @@
 | # | 内容 | 来源 | 备注 |
 |---|------|------|------|
 | 14 | Saver 补读路径 + .vrf 版本头 | P3-11 | ✅ 已完成（2026-08-09）：.vrf 加 "VRF1"+version=1 版本头；新增 `TryLoadVoxelChunk` 读路径（版本校验/索引定位/扇区读取/解压，任何失败回退重新生成）；`GenerateVoxelChunkData` 先查存档命中即用（含玩家修改）；`VoxelChunkData` 构造器加 `fillAir` 参数 |
-| 15 | World.cs 拆分：ChunkStreamer / TerrainGenerator / ChunkStore | P3-12 | 最大重构 |
-| 16 | 相机出生点改 SerializeField ✅（2026-08-09）；单例 → 场景显式引用/注入（依赖 #15，未做） | P3-10 | |
+| 15 | World.cs 拆分：ChunkStreamer / TerrainGenerator / ChunkStore | P3-12 | ✅ 代码完成（2026-08-09，待 Play Mode 验证）：World 瘦身为 facade（~110 行），新增 TerrainGenerator（生成+读存档）、ChunkStore（存储/池/写入/卸载保存+回调）、ChunkStreamer（队列调度/排序/预算/视距环） |
+| 16 | 单例 → 场景显式引用/注入 | P3-10 | ✅ 已完成（2026-08-09）：相机出生点改 SerializeField（先前）；去单例化：删 World.Instance，BlockInteraction 改序列化引用 + FindObjectOfType 兜底，VoxelChunk 改注入 mesh 重建回调（ChunkStore 构造注入、创建时透传、归还池清空），顺带删除死代码 CreateSinglePlaneVoxelChunk |
 | 17 | 死代码清理：`GenerateVoxelChunk`、`Decompress`、注释掉的 AsyncSaver、`BasicTree` stub、`uvIndex == null`、`TryGetBlock`、`Setblock(int,int,int)` 死重载 | P3-1/3-6/3-11/3-12 | ✅ 已完成（2026-08-09）；`uvIndex == null` 此前已不存在 |
 | 18 | P3-2 状态位 / P3-3 方向语义 / P3-4 ERROR 魔数修复 | P3-2/3-3/3-4 | 等方向性纹理需求出现前可拖 |
 | 19 | `Constants.CHUNK_SIZE` 贯通 Saver/压缩器/region 位移 | P3-14 | ✅ 已完成（2026-08-09）：新增 `REGION_SIZE/REGION_SIZE_LOG2/SECTOR_SIZE/CHUNK_VOLUME` 常量；顺带删除无调用方的 `Compress(Block[,,])` 重载 |

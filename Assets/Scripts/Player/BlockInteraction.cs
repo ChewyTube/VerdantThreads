@@ -3,6 +3,7 @@ using UnityEngine;
 // 玩家方块交互：鼠标左键破坏、右键放置、数字键 1-9 切换选中方块
 public class BlockInteraction : MonoBehaviour
 {
+    [SerializeField] private World world;              // 场景显式引用（可在 Inspector 拖 World；未拖时 Awake 自动查找）
     [SerializeField] private float reachDistance = 8f;      // 射线距离
     [SerializeField] private Block[] placeableBlocks;       // 可放置方块列表
     [SerializeField] private int defaultSelectedIndex = 2;  // 默认选中索引（对应 Stone）
@@ -11,6 +12,12 @@ public class BlockInteraction : MonoBehaviour
 
     private void Awake()
     {
+        // 场景引用兜底：未在 Inspector 拖 World 时自动查找（去单例化 #16）
+        if (world == null)
+        {
+            world = FindObjectOfType<World>();
+        }
+
         // placeableBlocks 为空时填充默认放置列表
         if (placeableBlocks == null || placeableBlocks.Length == 0)
         {
@@ -31,8 +38,8 @@ public class BlockInteraction : MonoBehaviour
 
     private void Update()
     {
-        // 世界单例未就绪时不处理
-        if (World.Instance == null) return;
+        // 世界引用未就绪时不处理
+        if (world == null) return;
 
         // 数字键 1-9 切换选中方块（最多 9 个，超出列表长度则只支持到列表长度）
         int maxSlot = Mathf.Min(9, placeableBlocks.Length);
@@ -66,7 +73,7 @@ public class BlockInteraction : MonoBehaviour
         // 射线只命中非 Air 方块；世界最底层（Y=0）Bedrock 不可破坏，防止挖穿世界底
         if (hit.Y == 0 && GetBlockTypeAt(hit) == BlockType.Bedrock) return;
 
-        World.Instance.SetBlock(BlockRegistry.Air, hit);
+        world.SetBlock(BlockRegistry.Air, hit);
         RequestMeshRebuildAround(hit);
     }
 
@@ -93,7 +100,7 @@ public class BlockInteraction : MonoBehaviour
         // 目标格已是固体 → 忽略
         if (IsSolid(placePos.X, placePos.Y, placePos.Z)) return;
 
-        World.Instance.SetBlock(placeableBlocks[selectedIndex], placePos);
+        world.SetBlock(placeableBlocks[selectedIndex], placePos);
         RequestMeshRebuildAround(placePos);
     }
 
@@ -170,7 +177,7 @@ public class BlockInteraction : MonoBehaviour
     private bool IsSolid(int x, int y, int z)
     {
         VCPosInWorld vcPos = new VCPosInWorld(x >> Constants.CHUNK_SIZE_LOG2, y >> Constants.CHUNK_SIZE_LOG2, z >> Constants.CHUNK_SIZE_LOG2);
-        Block[,,] blocks = World.Instance.GetChunkBlocks(vcPos);
+        Block[,,] blocks = world.GetChunkBlocks(vcPos);
         if (blocks == null) return false;
 
         int mask = Constants.CHUNK_SIZE - 1;
@@ -180,7 +187,7 @@ public class BlockInteraction : MonoBehaviour
     // 获取世界坐标处的方块类型（未加载 chunk 返回 Air）
     private BlockType GetBlockTypeAt(BlockPosInWorld pos)
     {
-        Block[,,] blocks = World.Instance.GetChunkBlocks(pos.GetCorrespondingVCPos());
+        Block[,,] blocks = world.GetChunkBlocks(pos.GetCorrespondingVCPos());
         if (blocks == null) return BlockType.Air;
 
         int mask = Constants.CHUNK_SIZE - 1;
@@ -191,13 +198,13 @@ public class BlockInteraction : MonoBehaviour
     private void RequestMeshRebuildAround(BlockPosInWorld pos)
     {
         VCPosInWorld vc = pos.GetCorrespondingVCPos();
-        World.Instance.RequestMeshRebuild(vc);
-        World.Instance.RequestMeshRebuild(new VCPosInWorld(vc.X + 1, vc.Y, vc.Z));
-        World.Instance.RequestMeshRebuild(new VCPosInWorld(vc.X - 1, vc.Y, vc.Z));
-        World.Instance.RequestMeshRebuild(new VCPosInWorld(vc.X, vc.Y + 1, vc.Z));
-        World.Instance.RequestMeshRebuild(new VCPosInWorld(vc.X, vc.Y - 1, vc.Z));
-        World.Instance.RequestMeshRebuild(new VCPosInWorld(vc.X, vc.Y, vc.Z + 1));
-        World.Instance.RequestMeshRebuild(new VCPosInWorld(vc.X, vc.Y, vc.Z - 1));
+        world.RequestMeshRebuild(vc);
+        world.RequestMeshRebuild(new VCPosInWorld(vc.X + 1, vc.Y, vc.Z));
+        world.RequestMeshRebuild(new VCPosInWorld(vc.X - 1, vc.Y, vc.Z));
+        world.RequestMeshRebuild(new VCPosInWorld(vc.X, vc.Y + 1, vc.Z));
+        world.RequestMeshRebuild(new VCPosInWorld(vc.X, vc.Y - 1, vc.Z));
+        world.RequestMeshRebuild(new VCPosInWorld(vc.X, vc.Y, vc.Z + 1));
+        world.RequestMeshRebuild(new VCPosInWorld(vc.X, vc.Y, vc.Z - 1));
     }
 
     // OnGUI：屏幕中心准星（2x2 像素）与左下角当前选中方块名

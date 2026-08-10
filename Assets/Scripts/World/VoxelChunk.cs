@@ -27,6 +27,9 @@ public class VoxelChunk : MonoBehaviour
 
     bool isEmpty = false;
 
+    // 注入的 mesh 重建请求回调（去单例化：由 ChunkStore 创建时赋值，World 组装时转发给 ChunkStreamer）
+    public Action<VCPosInWorld> onMeshRebuildRequested;
+
     void Awake()
     {
         InstanceId = ++_nextInstanceId;
@@ -86,27 +89,10 @@ public class VoxelChunk : MonoBehaviour
         if (changed)
         {
             changed = false;
-            World.Instance?.RequestMeshRebuild(pos);
+            onMeshRebuildRequested?.Invoke(pos);
         }
     }
 
-
-    public void CreateSinglePlaneVoxelChunk()
-    {
-        int CHUNK_SIZE = Constants.CHUNK_SIZE;
-
-        for (int x = 0; x < CHUNK_SIZE; x++)
-            for (int z = 0; z < CHUNK_SIZE; z++)
-            {
-                SetBlock(BlockRegistry.Bedrock, x, 0, z);
-                SetBlock(BlockRegistry.Dirt, x, 1, z);
-                SetBlock(BlockRegistry.Dirt, x, 2, z);
-                SetBlock(BlockRegistry.Grass, x, 3, z);
-                //SetBlock(BlockRegistry.Grass, x, x * z % 16, z);
-            }
-
-        World.Instance?.RequestMeshRebuild(pos);
-    }
 
     // 主线程调用：为本次后台 mesh 构建分配递增代次
     public long TakeBuildSeq() => ++_buildSeq;
@@ -166,6 +152,7 @@ public class VoxelChunk : MonoBehaviour
         changed = false;
         isEmpty = false;
         pos = default;
+        onMeshRebuildRequested = null; // 断注入回调引用，复用时由 ChunkStore 重新赋值
     }
 
     // 静态 Air 填充辅助（供 CreateEmptyVoxelChunk 复用池化数组）
