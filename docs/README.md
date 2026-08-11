@@ -16,6 +16,7 @@
 | [GAME_DESIGN.md](design/GAME_DESIGN.md) | 游戏设计文档（GDD）——**项目最高优先级设计依据**。孟德尔遗传 → DNA 的科技探索主线、豌豆 7 对性状、核心循环 |
 | [PEA_RENDERING.md](design/PEA_RENDERING.md) | 豌豆渲染方案（十字面片 vs 程序化几何，决策已定案，批1 已落地） |
 | [TAG_SYSTEM.md](design/TAG_SYSTEM.md) | 批2 豌豆记录与标签系统设计定案（双重标签/采摘/Genome/背包存档） |
+| [INVENTORY_SYSTEM.md](design/INVENTORY_SYSTEM.md) | 物品栏（热栏）与背包系统设计定案（通用物品系统，提前实现批2 的 2c/2f 基础） |
 
 ## 当前任务（status/）
 

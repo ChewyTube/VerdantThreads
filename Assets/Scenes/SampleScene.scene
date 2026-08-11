@@ -535,7 +535,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: aae0b0aaab8a5bf4596f826aeaa1c184, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  blockMaterial: {fileID: 2100000, guid: cdd30a5321fa2d4468fed908c49310e8, type: 2}
+  blockMaterial: {fileID: 2100000, guid: 7295a7c24bced3142a1f808c840bc47e, type: 2}
 --- !u!114 &1428917360
 MonoBehaviour:
   m_ObjectHideFlags: 0

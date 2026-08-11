@@ -21,7 +21,9 @@ Voxel/Minecraft-style chunked terrain prototype. Runs on **Unity Tuanjie** (团�
 - `World/Block/` — `Block` is a `readonly struct` wrapping a uint (low 16 bits = type via `BlockBits.TypeMask`; state bits at `StateMask` 0xFFFF_0000, shift 16; `StageMask` 0x3 for pea growth stage). `BlockRegistry` holds block singletons; `BlockUVMap` maps block+face → atlas tile; `MeshData` does vertex/UV math; `ChunkMeshBuilder` does face culling and emits pea cross-quads; `PeaTextures` paints pea placeholder tiles at runtime.
 - `World/Position/Postions.cs` — the filename typo is real; holds `VCPosInWorld` (chunk coords), `BlockPosInWorld`, `BlockPosInVoxelChunk` and conversions (chunk size 16 ⇒ `>>4` / `& 15`).
 - `Camera/CameraMove.cs` — free-fly camera (WASD + Space/Shift + mouse), main-thread only.
-- `Player/BlockInteraction.cs` — raycast-based break/place, number keys 1-9 to select block, `PeaSeed` in the placeable list.
+- `Player/BlockInteraction.cs` — raycast-based break/place. Selected item comes from `world.Backpack` (number keys 1-9 write `Backpack.Select`), pauses world ops while the backpack window is open. `PeaSeed` is a backpack item (slot 7).
+- `Inventory/ItemInstance.cs` + `Inventory/Backpack.cs` — item system (2026-08-11): non-stacking item list + `SelectedIndex` (single source of truth for selection) + `BackpackOpen`. Plain class, created by `World.Awake`.
+- `UI/HotbarWindow.cs` + `UI/BackpackWindow.cs` — IMGUI (OnGUI), `AddComponent` by `World` + `Init(Backpack)` injection. Atlas icons use the 24px-cell formula `(col*24+4, row*24+4, 16, 16)/768`; backpack toggles on E.
 - `WorldManager.cs` / `DataBuffer.cs` — `DontDestroyOnLoad` singletons for the block material and the cached `(blockType, face) → UV` dictionary.
 - `FastNoiseLite/` — vendored third-party MIT noise library; don't edit.
 

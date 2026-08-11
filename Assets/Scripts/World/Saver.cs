@@ -298,6 +298,10 @@ public class SimpleRegionWriter : IDisposable
 
     private bool _disposed;
 
+    // 读取索引条目中的扇区偏移（3B，大端），与 WriteVoxelChunk/Flush 的写入格式对称
+    private static uint ReadSectorOffset(byte[] header, int headerOffset) =>
+        ((uint)header[headerOffset] << 16) | ((uint)header[headerOffset + 1] << 8) | header[headerOffset + 2];
+
     // saveRoot/subPath 须在主线程解析后传入（后台线程不能访问 Application.persistentDataPath）
     public SimpleRegionWriter(string saveRoot, string subPath, Vector3Int regionPos)
     {
@@ -309,15 +313,52 @@ public class SimpleRegionWriter : IDisposable
         if (!Directory.Exists(dir))
             Directory.CreateDirectory(dir);
 
-        // FileShare.ReadWrite：读路径（TryLoadVoxelChunk）需与写并发打开同一文件
-        _stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+        // Step 0：不再用 FileMode.Create 整文件重建（会丢弃本会话未加载 chunk 的旧数据）。
+        // 文件已存在且版本头合法 → 读旧索引续写，旧 chunk 数据保留；否则才全新创建。
+        bool resume = false;
+        if (File.Exists(filePath))
+        {
+            try
+            {
+                using (var probe = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    if (probe.Length >= FORMAT_MAGIC_SIZE + INDEX_SIZE)
+                    {
+                        Span<byte> magic = stackalloc byte[FORMAT_MAGIC_SIZE];
+                        if (probe.Read(magic) == FORMAT_MAGIC_SIZE &&
+                            magic[0] == (byte)'V' && magic[1] == (byte)'R' && magic[2] == (byte)'F' && magic[3] == (byte)'1' &&
+                            BinaryPrimitives.ReadInt32BigEndian(magic[4..]) == 1)
+                        {
+                            probe.Seek(FORMAT_MAGIC_SIZE, SeekOrigin.Begin);
+                            if (probe.Read(_header, 0, INDEX_SIZE) == INDEX_SIZE)
+                            {
+                                // 尾部扇区向上取整对齐：新数据写到旧数据之后，不覆盖已有 chunk
+                                long dataBytes = probe.Length - HEADER_SIZE;
+                                _nextFreeSector = (uint)((dataBytes + Constants.SECTOR_SIZE - 1) / Constants.SECTOR_SIZE);
+                                resume = true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // 旧文件不可读 → 按损坏处理回退重建；存档是优化，非正确性依赖
+            }
+        }
 
-        // 写版本头（magic "VRF1" + version = 1，big-endian）
-        Span<byte> magic = stackalloc byte[FORMAT_MAGIC_SIZE];
-        magic[0] = (byte)'V'; magic[1] = (byte)'R'; magic[2] = (byte)'F'; magic[3] = (byte)'1';
-        BinaryPrimitives.WriteInt32BigEndian(magic[4..], 1);
-        _stream.Write(magic);
-        _stream.Write(_header, 0, INDEX_SIZE);
+        // FileShare.ReadWrite：读路径（TryLoadVoxelChunk）需与写并发打开同一文件
+        _stream = new FileStream(filePath, resume ? FileMode.Open : FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+
+        if (!resume)
+        {
+            // 全新文件：写版本头（magic "VRF1" + version = 1，big-endian）+ 空索引区
+            Span<byte> magic = stackalloc byte[FORMAT_MAGIC_SIZE];
+            magic[0] = (byte)'V'; magic[1] = (byte)'R'; magic[2] = (byte)'F'; magic[3] = (byte)'1';
+            BinaryPrimitives.WriteInt32BigEndian(magic[4..], 1);
+            _stream.Write(magic);
+            _stream.Write(_header, 0, INDEX_SIZE);
+        }
     }
 
     public void WriteVoxelChunk(int localX, int localY, int localZ, byte[] compressedData)
@@ -325,7 +366,19 @@ public class SimpleRegionWriter : IDisposable
         int totalBytes = 4 + compressedData.Length;
         byte sectorCount = (byte)Math.Ceiling(totalBytes / (double)Constants.SECTOR_SIZE);
 
-        long writePos = HEADER_SIZE + (long)_nextFreeSector * Constants.SECTOR_SIZE;
+        int headerOffset = (localX + localY * Constants.REGION_SIZE + localZ * Constants.REGION_SIZE * Constants.REGION_SIZE) * 4;
+
+        // 续写策略：旧条目容量足够 → 复用旧扇区（防同一 chunk 反复保存使文件无限膨胀）；
+        // 否则追加到文件尾（保留旧 chunk 数据，索引更新为新位置，旧扇区成为孤儿但无害）。
+        uint sectorOffset = ReadSectorOffset(_header, headerOffset);
+        bool reuse = _header[headerOffset + 3] >= sectorCount;
+        if (!reuse)
+        {
+            sectorOffset = _nextFreeSector;
+            _nextFreeSector += sectorCount;
+        }
+
+        long writePos = HEADER_SIZE + (long)sectorOffset * Constants.SECTOR_SIZE;
         _stream.Seek(writePos, SeekOrigin.Begin);
 
         Span<byte> lenBuf = stackalloc byte[4];
@@ -338,13 +391,10 @@ public class SimpleRegionWriter : IDisposable
         if (padding > 0)
             _stream.Write(new byte[padding], 0, padding);
 
-        int headerOffset = (localX + localY * Constants.REGION_SIZE + localZ * Constants.REGION_SIZE * Constants.REGION_SIZE) * 4;
-        _header[headerOffset + 0] = (byte)((_nextFreeSector >> 16) & 0xFF);
-        _header[headerOffset + 1] = (byte)((_nextFreeSector >> 8) & 0xFF);
-        _header[headerOffset + 2] = (byte)(_nextFreeSector & 0xFF);
+        _header[headerOffset + 0] = (byte)((sectorOffset >> 16) & 0xFF);
+        _header[headerOffset + 1] = (byte)((sectorOffset >> 8) & 0xFF);
+        _header[headerOffset + 2] = (byte)(sectorOffset & 0xFF);
         _header[headerOffset + 3] = sectorCount;
-
-        _nextFreeSector += sectorCount;
     }
 
     public void Flush()

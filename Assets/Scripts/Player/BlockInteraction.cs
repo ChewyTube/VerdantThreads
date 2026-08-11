@@ -1,14 +1,10 @@
 using UnityEngine;
 
-// 玩家方块交互：鼠标左键破坏、右键放置、数字键 1-9 切换选中方块
+// 玩家方块交互：鼠标左键破坏、右键放置、数字键 1-9 切换选中物品（选中状态在 Backpack）
 public class BlockInteraction : MonoBehaviour
 {
     [SerializeField] private World world;              // 场景显式引用（可在 Inspector 拖 World；未拖时 Awake 自动查找）
     [SerializeField] private float reachDistance = 8f;      // 射线距离
-    [SerializeField] private Block[] placeableBlocks;       // 可放置方块列表
-    [SerializeField] private int defaultSelectedIndex = 2;  // 默认选中索引（对应 Stone）
-
-    private int selectedIndex; // 当前选中方块索引
 
     private void Awake()
     {
@@ -17,38 +13,23 @@ public class BlockInteraction : MonoBehaviour
         {
             world = FindObjectOfType<World>();
         }
-
-        // placeableBlocks 为空时填充默认放置列表
-        if (placeableBlocks == null || placeableBlocks.Length == 0)
-        {
-            placeableBlocks = new Block[]
-            {
-                BlockRegistry.Grass,
-                BlockRegistry.Dirt,
-                BlockRegistry.Stone,
-                BlockRegistry.Log,
-                BlockRegistry.Leaves,
-                BlockRegistry.Bedrock,
-                BlockRegistry.PeaSeed,
-            };
-        }
-
-        // 修正默认选中索引到有效范围
-        selectedIndex = Mathf.Clamp(defaultSelectedIndex, 0, placeableBlocks.Length - 1);
     }
 
     private void Update()
     {
-        // 世界引用未就绪时不处理
-        if (world == null) return;
+        // 世界/背包未就绪时不处理
+        if (world == null || world.Backpack == null) return;
 
-        // 数字键 1-9 切换选中方块（最多 9 个，超出列表长度则只支持到列表长度）
-        int maxSlot = Mathf.Min(9, placeableBlocks.Length);
+        // 背包窗打开时暂停放置/破坏（E 键开关由 BackpackWindow 处理）
+        if (world.Backpack.BackpackOpen) return;
+
+        // 数字键 1-9 切换选中物品（最多热栏槽位个数；物品数不足时只支持到物品数）
+        int maxSlot = Mathf.Min(Constants.HOTBAR_SLOT_COUNT, world.Backpack.Count);
         for (int i = 1; i <= maxSlot; i++)
         {
             if (Input.GetKeyDown(KeyCode.Alpha0 + i))
             {
-                selectedIndex = i - 1;
+                world.Backpack.Select(i - 1);
                 break;
             }
         }
@@ -59,7 +40,7 @@ public class BlockInteraction : MonoBehaviour
             TryBreakBlock();
         }
 
-        // 鼠标右键：在命中面外侧放置选中方块
+        // 鼠标右键：在命中面外侧放置选中物品对应方块
         if (Input.GetMouseButtonDown(1))
         {
             TryPlaceBlock();
@@ -78,10 +59,14 @@ public class BlockInteraction : MonoBehaviour
         RequestMeshRebuildAround(hit);
     }
 
-    // 放置逻辑：命中面外侧放置选中方块，并重建相关 chunk mesh
+    // 放置逻辑：命中面外侧放置选中物品对应方块，并重建相关 chunk mesh
     private void TryPlaceBlock()
     {
         if (!RaycastVoxel(out BlockPosInWorld hit, out Vector3Int faceNormal)) return;
+
+        // 无选中物品则不放置
+        ItemInstance current = world.Backpack.CurrentSelected;
+        if (current == null) return;
 
         // 放置位置 = 命中方块 + 进入面法线（相邻格）
         BlockPosInWorld placePos = new BlockPosInWorld(hit.X + faceNormal.x, hit.Y + faceNormal.y, hit.Z + faceNormal.z);
@@ -101,7 +86,7 @@ public class BlockInteraction : MonoBehaviour
         // 目标格已是固体 → 忽略
         if (IsSolid(placePos.X, placePos.Y, placePos.Z)) return;
 
-        world.SetBlock(placeableBlocks[selectedIndex], placePos);
+        world.SetBlock(BlockRegistry.GetBlock(current.ItemType), placePos);
         RequestMeshRebuildAround(placePos);
     }
 
@@ -208,7 +193,7 @@ public class BlockInteraction : MonoBehaviour
         world.RequestMeshRebuild(new VCPosInWorld(vc.X, vc.Y, vc.Z - 1));
     }
 
-    // OnGUI：屏幕中心准星（2x2 像素）与左下角当前选中方块名
+    // OnGUI：屏幕中心准星（2x2 像素）与左下角当前选中物品名
     private void OnGUI()
     {
         // 屏幕中心准星
@@ -216,8 +201,9 @@ public class BlockInteraction : MonoBehaviour
         float crossY = Screen.height * 0.5f - 1f;
         GUI.Box(new Rect(crossX, crossY, 2f, 2f), GUIContent.none);
 
-        // 左下角显示当前选中方块名
+        // 左下角显示当前选中物品名（读 Backpack 当前选中，与热栏/背包窗同一来源）
+        ItemInstance current = world != null && world.Backpack != null ? world.Backpack.CurrentSelected : null;
         GUI.Label(new Rect(8f, Screen.height - 24f, 200f, 20f),
-            $"当前方块：{placeableBlocks[selectedIndex].GetBlockType()}");
+            $"当前物品：{(current != null ? current.DisplayName : "无")}");
     }
 }

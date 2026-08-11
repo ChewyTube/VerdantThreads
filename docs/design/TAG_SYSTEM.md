@@ -41,7 +41,7 @@
 - `Assets/Scripts/Inventory/ItemInstance.cs` — 物品实例（itemType / genome / 两类标签 / 标准化映射）
 - `Assets/Scripts/Inventory/Backpack.cs` — 物品列表（**非堆叠**，每颗豆荚是个体，带自身 genome）
 - `Assets/Scripts/Inventory/TagPresetConfig.cs` — 预设配置 ScriptableObject
-- `Assets/Scripts/UI/BackpackWindow.cs` — OnGUI 背包窗（F 开关；右键行或「标签」按钮打开编辑窗）
+- `Assets/Scripts/UI/BackpackWindow.cs` — OnGUI 背包窗（E 开关，键位已由 F 调整为 E，见 `docs/design/INVENTORY_SYSTEM.md`；右键行或「标签」按钮打开编辑窗）
 - `Assets/Scripts/UI/TagEditorWindow.cs` — OnGUI 标签编辑（两类标签**分区+异色**；文本框 + 预设按钮填入）
 - `Assets/Scripts/UI/StandardizeWindow.cs` — 调试标准化向导（F9）
 - `Assets/Scripts/Save/BackpackSaver.cs` — NBT 式 tag 树序列化

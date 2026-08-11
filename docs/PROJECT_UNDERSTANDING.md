@@ -135,9 +135,9 @@ bit25–31 预留
 
 `TryLoadVoxelChunk`（后台线程可安全调用，独立开文件流 + FileShare.ReadWrite 与写并发）：校验版本头 → 索引定位 → 扇区读 → 越界防护 → 解压 → `uint→Block`。**任何失败返回 null，回退重新生成**（存档是优化，非正确性依赖）。
 
-### 7.4 ⚠️ 已知隐患（架构评审确认，Step 0 必修）
+### 7.4 ✅ 已修复（2026-08-11，Step 0）
 
-`SimpleRegionWriter` 构造用 **`FileMode.Create`**——会话内首次写某 region 会整文件重建，**只包含本次会话加载过的 chunk**。对地形是"回退种子重新生成"，可忍受；对将来的遗传数据是**不可逆丢失**。改 `FileMode.OpenOrCreate` + 读旧索引续写。
+`SimpleRegionWriter` 曾用 `FileMode.Create`——会话内首次写某 region 会整文件重建，只包含本次会话加载过的 chunk。对地形是"回退种子重新生成"，可忍受；对遗传数据是**不可逆丢失**。已改为 `FileMode.OpenOrCreate` + 读旧索引续写（`_nextFreeSector` 从文件尾对齐续写；同 chunk 旧扇区容量足够时复用防膨胀），已验证跨会话旧数据保留。
 
 ## 八、玩家交互
 
@@ -145,12 +145,19 @@ bit25–31 预留
 
 WASD+Space/Shift 移动（10 m/s，加速度/减速度插值，水平移动去 Y 分量），鼠标旋转（灵敏度 2，pitch ±89°），聚焦失焦自动解锁光标。
 
-### 8.2 `Player/BlockInteraction.cs`（体素交互）
+### 8.2 `Player/BlockInteraction.cs`（体素交互，选中状态已迁至 Backpack）
 
 - **左键破坏**：Amanatides-Woo DDA 网格步进射线（返回命中块 + 进入面法线，8 格距离）；Y=0 的 Bedrock 不可破坏。
-- **右键放置**：命中面外侧一格；守卫（不封自己、Y∈[0,256)、目标非固体）；数字键 1-9 切换方块。
-- 默认放置列表：Grass/Dirt/Stone/Log/Leaves/Bedrock/**PeaSeed**（7 号键）。
+- **右键放置**：命中面外侧一格；守卫（不封自己、Y∈[0,256)、目标非固体）；放置类型读 `world.Backpack.CurrentSelected`。
+- **选中切换**：数字键 1-9 写 `Backpack.Select(index)`（`maxSlot = min(HOTBAR_SLOT_COUNT=9, Count)`）；背包窗（E 键）打开时暂停放置/破坏。
+- 默认背包物品：Grass/Dirt/Stone/Log/Leaves/Bedrock/**PeaSeed**（7 号键），初始选中 Stone（索引 2）。
 - 破坏/放置后重建目标 + 6 邻居 chunk mesh（入帧预算队列，内部去重）。
+
+### 8.3 物品系统（2026-08-11，见 `docs/design/INVENTORY_SYSTEM.md`）
+
+- `Backpack`（普通 class，`World.Backpack` 持有）：非堆叠 `List<ItemInstance>` + `SelectedIndex`（**选择状态唯一权威**）+ `BackpackOpen`。
+- `ItemInstance`：`BlockType` + 中文 `DisplayName`（批2 将扩展 genome/标签）。
+- `HotbarWindow` / `BackpackWindow`：IMGUI（OnGUI），`World.Awake` 中 `AddComponent` + `Init(Backpack)` 注入；图标从 `WorldManager` 图集按 24px cell 公式截取（`(col*24+4, row*24+4, 16, 16)/768`，豌豆用 `PeaTextures.CellByStage[0]`）。
 
 ## 九、材质 / 图集 / 豌豆占位贴图
 
@@ -163,7 +170,7 @@ WASD+Space/Shift 移动（10 m/s，加速度/减速度插值，水平移动去 Y
 1. **Tuanjie meta guid**：`Atlas.png` 等资产重新导入可能重生成 meta guid → 静默断引用（白渲染无错）；`.meta` 是 base64、`.mat/.scene` 里是 32-hex，必须一致。
 2. **24px cell 公式**：任何图集写入代码必须 `x*24+4`；用 16px 会画错位（豌豆 invisible 无报错）。
 3. **`GetBlockState` 括号**：`(_value & StateMask) >> StateShift` 括号不能去。
-4. **`FileMode.Create` 整文件重建**（见 7.4）。
+4. **`FileMode.Create` 整文件重建**——已修复（2026-08-11，Step 0，见 7.4）。
 5. 新 .cs 文件需 Unity 重导入才进 csproj，编辑器外 LSP 会短暂报"找不到类型"（陈旧诊断，非真实错误）。
 6. 代码注释和 Debug.Log 全中文；常量进 `Constants.cs`。
 

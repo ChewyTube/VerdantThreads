@@ -20,6 +20,9 @@ public class World : MonoBehaviour
     private ChunkStore store;
     private ChunkStreamer streamer;
 
+    // 背包（选择状态唯一权威）：由 Awake 创建，注入给热栏 / 背包窗 / BlockInteraction
+    public Backpack Backpack { get; private set; }
+
     [SerializeField] private Vector3 cameraSpawnPos = new(0, 64, 0); // 相机出生点（可在 Inspector 覆盖，不再硬编码覆盖场景摆放）
 
     Camera cam;
@@ -33,6 +36,14 @@ public class World : MonoBehaviour
         streamer = new ChunkStreamer(terrainGen, store, lineOfSight, verticalLineOfSight);
 
         DontDestroyOnLoad(gameObject);
+
+        // 物品系统装配：创建背包（选择状态唯一权威），挂 UI 组件并注入引用。
+        // AddComponent 后立即 Init，保证注入先于首次 OnGUI（同一 Awake 帧内完成）
+        Backpack = new Backpack();
+        HotbarWindow hotbar = gameObject.AddComponent<HotbarWindow>();
+        hotbar.Init(Backpack);
+        BackpackWindow backpackWindow = gameObject.AddComponent<BackpackWindow>();
+        backpackWindow.Init(Backpack);
     }
 
     void Start()
