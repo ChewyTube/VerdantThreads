@@ -15,11 +15,14 @@ public static class Constants
     public const int HOTBAR_SLOT_COUNT = 9;               // 热栏固定槽位数
     public const KeyCode BACKPACK_TOGGLE_KEY = KeyCode.E; // 背包窗开关按键
 
-    // ---- 豌豆生长（4 阶段：最小苗→苗→开花→结果）----
-    public const float PEA_GROWTH_TICK_INTERVAL = 1f;   // 生长 tick 扫描间隔（秒）
-    public const float PEA_STAGE_1_SECONDS = 20f;       // 最小苗→苗所需生长时间（秒，可调）
-    public const float PEA_STAGE_2_SECONDS = 40f;       // 苗→开花所需生长时间（秒，可调）
-    public const float PEA_STAGE_3_SECONDS = 60f;       // 开花→结果所需生长时间（秒，可调）
+    // ---- 豌豆生长（MC 随机刻制：20 tick/秒，每 tick 每 chunk 抽随机位置，命中豌豆按概率推进阶段）----
+    public const float PEA_GROWTH_TICK_INTERVAL = 0.05f; // 随机刻 tick 间隔（秒）：1/20s = 每秒 20 tick（MC 同款）
+    public const int PEA_RANDOM_TICKS_PER_CHUNK_PER_TICK = 3;  // 每 chunk 每 tick 随机刻次数（MC 每 section 每 tick 3 次，1:1 对齐；chunk 体积 = MC section）
+    public const float PEA_GROWTH_ADVANCE_CHANCE = 1f / 3f;      // 随机刻命中时的阶段推进概率（MC 小麦同款）
+    // 期望节奏：单阶段 ≈ 4096 / (3 × 20) / (1/3) ≈ 205s；三阶段全熟 ≈ 10 分钟（可调，嫌快/慢改上面两个常量）
+
+    // ---- 方块更新机制 ----
+    public const int MAX_BLOCK_UPDATE_DEPTH = 256;      // 方块更新递归通知深度上限（防环：破坏联动等递归写入链）
 
     // ---- 地物系统 ----
     public const int PEA_CLUMP_DENSITY = 256;           // 豌豆丛中心频率（哈希取模分母，越小越密；约 1/256 列一丛，每丛 14-18 株）

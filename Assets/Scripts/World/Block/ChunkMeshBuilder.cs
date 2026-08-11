@@ -83,7 +83,18 @@ public static class ChunkMeshBuilder
                     {
                         int stage = (int)(d.Blocks[x, y, z].GetBlockState() & BlockBits.StageMask);
                         int xw = x + d.Pos.X * s, yw = y + d.Pos.Y * s, zw = z + d.Pos.Z * s;
-                        meshData.AddPeaQuad(xw, yw, zw, stage);
+                        // 阶段 0/1：单格十字用阶段贴图；阶段 2/3：两格高植株底部格贴图（顶部格由 PeaPlantTop 画）
+                        if (stage >= 2)
+                            meshData.AddPeaQuadCell(xw, yw, zw, PeaTextures.PlantBottomCell);
+                        else
+                            meshData.AddPeaQuad(xw, yw, zw, stage);
+                        continue;
+                    }
+                    // 豌豆两格高植株顶部格：独立方块类型，固定顶部贴图
+                    if (bt == BlockType.PeaPlantTop)
+                    {
+                        int xw = x + d.Pos.X * s, yw = y + d.Pos.Y * s, zw = z + d.Pos.Z * s;
+                        meshData.AddPeaQuadCell(xw, yw, zw, PeaTextures.PlantTopCell);
                         continue;
                     }
                     if (bt != BlockType.Air && bt != BlockType.Void)
@@ -159,9 +170,10 @@ public static class ChunkMeshBuilder
         if (neighborBt == BlockType.Air || neighborBt == BlockType.Void) return false;
 
         var bt = d.Blocks[x, y, z].GetBlockType();
-        // 半透明方块（树叶）与不占满格子的豌豆（十字面片）不剔除邻居面：透过它们能看到相邻方块
+        // 半透明方块（树叶）与不占满格子的豌豆（十字面片，含两格高植株顶部格）不剔除邻居面：透过它们能看到相邻方块
         if (bt == BlockType.Leaves || neighborBt == BlockType.Leaves) return false;
         if (bt == BlockType.PeaStem || neighborBt == BlockType.PeaStem) return false;
+        if (bt == BlockType.PeaPlantTop || neighborBt == BlockType.PeaPlantTop) return false;
 
         return true;
     }

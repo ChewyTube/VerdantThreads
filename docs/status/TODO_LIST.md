@@ -16,6 +16,17 @@
 - [x] **物品栏与背包系统**（阶段二，`docs/design/INVENTORY_SYSTEM.md`）：`ItemInstance` + `Backpack`（选择状态唯一权威）+ `HotbarWindow`（9 槽/图集图标/左上角 1-9/选中高亮）+ `BackpackWindow`（E 键/点击选中）；`BlockInteraction` 放置改读 Backpack
 - [x] **地物系统（Feature）**（`docs/design/FEATURE_SYSTEM.md`）：生成期地物抽象（`Feature` 基类 + `TerrainGenerator` 锚点装配）；树从 `TerrainGenerator` 内嵌代码 1:1 搬入 `TreeFeature`（外观不变）；新增 `PeaFeature` 豌豆自然生成（密度哈希 + 确定性基因 + `AddPendingTile` 通道，主线程 CreateChunk 后与存档读回统一回挂）
 - [x] **豌豆丛生（PeaClumpFeature）**（`docs/design/PEA_CLUMP_FEATURE.md`）：豌豆单株生成改为丛生（每丛 14-18 株聚簇，中心密度哈希 + 半径内确定性 jitter；2026-08-11 调参：密度 64→256、株数 3-6→14-18、半径 2→3）；整丛共享母本基因 + 每株株坐标哈希确定性微变异（1-2 个等位基因位 0↔1 翻转）；tile 通道升级为世界坐标版 `pendingTileWrites`（`ChunkStreamer` 新增平行重试队列 `_pendingTileWritesQueue`，跨 chunk 块走 pendingBlocks / tile 走新通道，两条路在目标 chunk 汇合）；`PeaFeature.cs` 已删除、`PEA_FEATURE_DENSITY` → `PEA_CLUMP_DENSITY`/`MIN`/`MAX`/`RADIUS` 常量
+- [x] **豌豆生长改随机刻（MC 式，存档 v3）**（`docs/design/GROWTH_RANDOM_TICK.md`）：生长由计时阈值（20/40/60s，过快）改为 MC 式随机刻——**20 tick/秒**（`PEA_GROWTH_TICK_INTERVAL=0.05f`，`World.Update` while 补 tick），每 chunk 每 tick 抽 `PEA_RANDOM_TICKS_PER_CHUNK_PER_TICK=3` 个随机位置（MC 每 section 每 tick 3 次 1:1 对齐），命中 `PeaStem` 且阶段<3 时以 `PEA_GROWTH_ADVANCE_CHANCE=1/3` 推进（阶段只进不退，存方块状态位 StageMask）；期望单阶段 ≈ 205s、三阶段全熟 ≈ 10 分钟；**GrowthTime 退役**（`PeaTileData`/`TileSaveRecord`/`TickPeaGrowth` 全链路删除）；存档载荷升级 v3（tile 记录 14B→10B，magic `'V''3'`），读路径 v1/v2/v3 三版判别、旧档兼容；`PEA_STAGE_1/2/3_SECONDS` 已删除
+- [x] **豌豆两格高植株**（阶段链 0 最小苗→1 苗→2 两格高植株→3 开花结果）：顶部格新方块 `BlockType.PeaPlantTop=9`（MC tall plant 式，可命中/存档/破坏联动，无 tile）；随机刻阶段 1→2 先占顶部格（`TryEnsurePlantTop`：上方必须 Air、跨 chunk 安全、成功才推进底部）后推进，顶部格不生长；贴图阶段 0/1 用 CellByStage((2,3)/(2,2))、阶段 2/3 底部 `PlantBottomCell(2,5)` / 顶部 `PlantTopCell(2,4)`（用户绘制，`PaintAtlasPlaceholders` 占位绘制退役）；破坏联动（打底→清顶+RemoveTile / 打顶→底部退回阶段 0 保留 tile）；旧档修复 `ChunkStore.RepairPeaPlants`（创建 chunk 后三向扫描补顶/清孤儿顶，跨 chunk 读邻居未加载跳过）
+
+## 方块更新机制（Block Update System，设计定案见 docs/design/BLOCK_UPDATE_SYSTEM.md）⏳
+
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| Step A | 随机刻泛化：豌豆逻辑迁入 `BlockUpdateCenter.DispatchRandomTick` 类型分派，行为零变化 | ⏳ |
+| Step B | BlockUpdate 通知：`store.SetBlock` 变化检测 + 本位置/6 邻居通知 + 递归深度上限；破坏联动从 BlockInteraction 特判迁入更新中心 | ⏳ |
+| Step C | ScheduledTick 计划刻：tick 计数器 + 按 chunk 待执行列表 + `ScheduleTick(pos, delayTicks)` API；chunk 卸载丢弃；暂不接新方块 | ⏳ |
+| 验证 | Play Mode：A 后生长节奏不变；B 后破坏联动一致（含跨 chunk）；C 后计划刻到期触发 | ⏳ |
 
 ## 基因系统路线图（架构评审 @oracle 已定案）⏳
 

@@ -21,14 +21,13 @@ public struct SaveTask
     public int RetryCount; // 失败重试次数（重入队时递增）
 }
 
-// 豌豆 tile 存档记录（存档 v2）：纯值字段（ushort key + uint 基因 + int 世代 + float 生长时间），
-// 由主线程快照生成后交给 worker 只读，跨线程安全。
+// 豌豆 tile 存档记录（存档 v3）：纯值字段（ushort key + uint 基因 + int 世代），
+// 由主线程快照生成后交给 worker 只读，跨线程安全。GrowthTime 已退役（生长阶段存方块状态位）。
 public struct TileSaveRecord
 {
     public ushort Key;       // 块内线性 key：(x<<8)|(y<<4)|z
     public uint GenomeValue; // PeaTileData.Genome.Value
     public int Generation;   // 世代（种植时 0）
-    public float GrowthTime; // 已生长秒数
 }
 
 public class Saver
@@ -83,10 +82,10 @@ public class Saver
 
     public void SaveVoxelChunk(VCPosInWorld vcPos, Block[,,] chunkData)
     {
-        SaveVoxelChunk(vcPos, chunkData, Array.Empty<TileSaveRecord>()); // 兼容入口：无 tile → 委托带 tile 重载（仍写 v2 载荷，tileCount=0）
+        SaveVoxelChunk(vcPos, chunkData, Array.Empty<TileSaveRecord>()); // 兼容入口：无 tile → 委托带 tile 重载（仍写 v3 载荷，tileCount=0）
     }
 
-    // 带 tile 的保存（存档 v2）：主线程调用。tiles 须由调用方预先快照（Saver.SnapshotTiles，
+    // 带 tile 的保存（存档 v3）：主线程调用。tiles 须由调用方预先快照（Saver.SnapshotTiles，
     // 快照须发生在主线程），本方法仅传递数组引用，worker 只读 TileSaveRecord[]（纯值，跨线程安全）。
     public void SaveVoxelChunk(VCPosInWorld vcPos, Block[,,] chunkData, TileSaveRecord[] tiles)
     {
@@ -220,7 +219,7 @@ public class Saver
         }
     }
 
-    // 读路径：从 .vrf region 文件加载单个 chunk（存档 v2：块数据 + tile 快照；v1 旧档自动兼容）。
+    // 读路径：从 .vrf region 文件加载单个 chunk（存档 v3：块数据 + tile 快照；v1/v2 旧档自动兼容）。
     // 缺失/损坏/未保存 → 返回 false 且 blocks/tiles = null，由调用方重新生成。
     // 后台线程可安全调用（独立打开文件流，与写路径的 _writers 互不干扰；FileShare.ReadWrite 允许并发）。
     public bool TryLoadVoxelChunk(VCPosInWorld vcPos, out Block[,,] blocks, out TileSaveRecord[] tiles)
@@ -306,8 +305,7 @@ public class Saver
             {
                 Key = kv.Key,
                 GenomeValue = tile.Genome.Value,
-                Generation = tile.Generation,
-                GrowthTime = tile.GrowthTime
+                Generation = tile.Generation
             };
         }
         return records;
@@ -466,16 +464,21 @@ public static class ZlibChunkCompressor
 {
     private const int RawDataSize = Constants.CHUNK_VOLUME * sizeof(uint);
 
-    // v2 载荷：解压后的字节布局（块数据段仍为 v1 的 native 端序线性布局）：
-    //   [0..1]    magic 'V' '2'
+    // v2/v3 载荷：解压后的字节布局（块数据段仍为 v1 的 native 端序线性布局）：
+    //   [0..1]    magic 'V' '2' / 'V' '3'
     //   [2..5]    uint32 tileCount（大端）
-    //   [6..]     tileCount × 14 字节 TileRecord（全部大端）：
-    //               ushort key | uint genome | int generation | int growthTime（SingleToInt32Bits）
+    //   [6..]     tileCount × TileRecord（全部大端）：
+    //               v2：ushort key | uint genome | int generation | int growthTime（SingleToInt32Bits）→ 14B
+    //               v3：ushort key | uint genome | int generation（GrowthTime 退役）→ 10B
     //   [..]      uint[CHUNK_VOLUME] 块数据（16384 字节）
-    private const int V2_HEADER_SIZE = 6;              // magic(2) + tileCount(4)
-    private const int TILE_RECORD_SIZE = 14;           // 2 + 4 + 4 + 4
+    private const int V2_HEADER_SIZE = 6;              // magic(2) + tileCount(4)（v2/v3 共用）
+    private const int V2_TILE_RECORD_SIZE = 14;        // 2 + 4 + 4 + 4（v2 含 GrowthTime）
+    private const int V3_HEADER_SIZE = 6;              // magic(2) + tileCount(4)
+    private const int V3_TILE_RECORD_SIZE = 10;        // 2 + 4 + 4（v3 移除 GrowthTime）
     private const int V2_MAGIC0 = (byte)'V';
     private const int V2_MAGIC1 = (byte)'2';
+    private const int V3_MAGIC0 = (byte)'V';
+    private const int V3_MAGIC1 = (byte)'3';
 
     public static byte[] Compress(uint[,,] chunkData, System.IO.Compression.CompressionLevel level = System.IO.Compression.CompressionLevel.Fastest)
     {
@@ -506,7 +509,7 @@ public static class ZlibChunkCompressor
         return output.ToArray();
     }
 
-    // v2 压缩：始终产出 v2 载荷（0 tile 也写 magic + tileCount=0），全档统一 v2 格式
+    // v3 压缩：始终产出 v3 载荷（0 tile 也写 magic + tileCount=0），全档统一 v3 格式
     public static byte[] Compress(uint[,,] chunkData, TileSaveRecord[] tiles, System.IO.Compression.CompressionLevel level = System.IO.Compression.CompressionLevel.Fastest)
     {
         if (chunkData.Length != Constants.CHUNK_VOLUME)
@@ -514,21 +517,20 @@ public static class ZlibChunkCompressor
 
         if (tiles == null) tiles = Array.Empty<TileSaveRecord>();
 
-        // 1. 组装 v2 载荷：magic + tileCount + 记录（大端）+ 块数据（native 端序，与 v1 一致）
-        int payloadSize = V2_HEADER_SIZE + tiles.Length * TILE_RECORD_SIZE + RawDataSize;
+        // 1. 组装 v3 载荷：magic + tileCount + 记录（大端）+ 块数据（native 端序，与 v1 一致）
+        int payloadSize = V3_HEADER_SIZE + tiles.Length * V3_TILE_RECORD_SIZE + RawDataSize;
         byte[] payload = new byte[payloadSize];
-        payload[0] = (byte)V2_MAGIC0;
-        payload[1] = (byte)V2_MAGIC1;
+        payload[0] = (byte)V3_MAGIC0;
+        payload[1] = (byte)V3_MAGIC1;
         BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(2), tiles.Length);
 
-        int offset = V2_HEADER_SIZE;
+        int offset = V3_HEADER_SIZE;
         foreach (var t in tiles)
         {
             BinaryPrimitives.WriteUInt16BigEndian(payload.AsSpan(offset), t.Key);
             BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(offset + 2), t.GenomeValue);
             BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(offset + 6), t.Generation);
-            BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(offset + 10), BitConverter.SingleToInt32Bits(t.GrowthTime));
-            offset += TILE_RECORD_SIZE;
+            offset += V3_TILE_RECORD_SIZE;
         }
 
         // 块数据：与 v1 相同的线性索引布局
@@ -558,9 +560,9 @@ public static class ZlibChunkCompressor
         public TileSaveRecord[] Tiles;
     }
 
-    // 解压并自动判别 v1/v2 载荷：长度 == RawDataSize → v1 纯块数据（Tiles 空）；
-    // 长度 > RawDataSize 且 magic "V2" → v2（校验 长度 == 6 + 14*tileCount + RawDataSize）；
-    // 其余视为损坏抛 InvalidDataException。
+    // 解压并自动判别 v1/v2/v3 载荷：长度 == RawDataSize → v1 纯块数据（Tiles 空）；
+    // magic "V2" → v2（记录 14B，含 GrowthTime，已退役读出后丢弃）；magic "V3" → v3（记录 10B）；
+    // 长度校验按各自记录尺寸；其余视为损坏抛 InvalidDataException。
     public static ChunkPayload DecompressPayload(byte[] compressed)
     {
         byte[] raw;
@@ -568,7 +570,7 @@ public static class ZlibChunkCompressor
         using (var deflate = new DeflateStream(input, CompressionMode.Decompress))
         using (var output = new MemoryStream())
         {
-            deflate.CopyTo(output); // 解压全部字节（v2 载荷比 RawDataSize 长）
+            deflate.CopyTo(output); // 解压全部字节（v2/v3 载荷比 RawDataSize 长）
             raw = output.ToArray();
         }
 
@@ -582,13 +584,13 @@ public static class ZlibChunkCompressor
             };
         }
 
-        // v2：magic 'V''2' + tileCount + tileCount×14B 记录 + 块数据
+        // v2 旧档：magic 'V''2' + tileCount + tileCount×14B 记录 + 块数据（GrowthTime 读出后丢弃）
         if (raw.Length > RawDataSize && raw[0] == V2_MAGIC0 && raw[1] == V2_MAGIC1)
         {
             int tileCount = BinaryPrimitives.ReadInt32BigEndian(raw.AsSpan(2));
             if (tileCount < 0)
                 throw new InvalidDataException($"v2 tileCount 非法：{tileCount}");
-            int expected = V2_HEADER_SIZE + tileCount * TILE_RECORD_SIZE + RawDataSize;
+            int expected = V2_HEADER_SIZE + tileCount * V2_TILE_RECORD_SIZE + RawDataSize;
             if (raw.Length != expected)
                 throw new InvalidDataException($"v2 载荷长度不符：got {raw.Length}, expected {expected}");
 
@@ -600,10 +602,40 @@ public static class ZlibChunkCompressor
                 {
                     Key = BinaryPrimitives.ReadUInt16BigEndian(raw.AsSpan(offset)),
                     GenomeValue = BinaryPrimitives.ReadUInt32BigEndian(raw.AsSpan(offset + 2)),
-                    Generation = BinaryPrimitives.ReadInt32BigEndian(raw.AsSpan(offset + 6)),
-                    GrowthTime = BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32BigEndian(raw.AsSpan(offset + 10)))
+                    Generation = BinaryPrimitives.ReadInt32BigEndian(raw.AsSpan(offset + 6))
+                    // v2 第 4 段（offset+10）为 GrowthTime（SingleToInt32Bits），已退役，读出后直接丢弃
                 };
-                offset += TILE_RECORD_SIZE;
+                offset += V2_TILE_RECORD_SIZE;
+            }
+
+            return new ChunkPayload
+            {
+                Blocks = ToBlocks(raw, offset, RawDataSize),
+                Tiles = tiles
+            };
+        }
+
+        // v3：magic 'V''3' + tileCount + tileCount×10B 记录 + 块数据
+        if (raw.Length > RawDataSize && raw[0] == V3_MAGIC0 && raw[1] == V3_MAGIC1)
+        {
+            int tileCount = BinaryPrimitives.ReadInt32BigEndian(raw.AsSpan(2));
+            if (tileCount < 0)
+                throw new InvalidDataException($"v3 tileCount 非法：{tileCount}");
+            int expected = V3_HEADER_SIZE + tileCount * V3_TILE_RECORD_SIZE + RawDataSize;
+            if (raw.Length != expected)
+                throw new InvalidDataException($"v3 载荷长度不符：got {raw.Length}, expected {expected}");
+
+            TileSaveRecord[] tiles = new TileSaveRecord[tileCount];
+            int offset = V3_HEADER_SIZE;
+            for (int i = 0; i < tileCount; i++)
+            {
+                tiles[i] = new TileSaveRecord
+                {
+                    Key = BinaryPrimitives.ReadUInt16BigEndian(raw.AsSpan(offset)),
+                    GenomeValue = BinaryPrimitives.ReadUInt32BigEndian(raw.AsSpan(offset + 2)),
+                    Generation = BinaryPrimitives.ReadInt32BigEndian(raw.AsSpan(offset + 6))
+                };
+                offset += V3_TILE_RECORD_SIZE;
             }
 
             return new ChunkPayload

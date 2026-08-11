@@ -8,7 +8,8 @@ public static class BlockRegistry
     public static readonly Block Stone      = new Block(BlockType.Stone);
     public static readonly Block Log        = new Block(BlockType.Log);
     public static readonly Block Leaves     = new Block(BlockType.Leaves);
-    public static readonly Block PeaSeed    = new Block((uint)BlockType.PeaStem); // 豌豆种子（生长阶段 0=苗）
+    public static readonly Block PeaSeed    = new Block((uint)BlockType.PeaStem); // 豌豆种子（生长阶段 0=最小苗）
+    public static readonly Block PeaPlantTop = new Block(BlockType.PeaPlantTop);   // 豌豆两格高植株顶部格（无 tile 无阶段）
 
     public static Block GetBlock(BlockType blockType)
     {
@@ -23,6 +24,7 @@ public static class BlockRegistry
             BlockType.Log => Log,
             BlockType.Leaves => Leaves,
             BlockType.PeaStem => PeaSeed,
+            BlockType.PeaPlantTop => PeaPlantTop,
 
             _ => throw new System.ArgumentException($"未知方块类型: {blockType}"),
         };

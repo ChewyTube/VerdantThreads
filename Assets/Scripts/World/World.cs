@@ -19,6 +19,7 @@ public class World : MonoBehaviour
     private TerrainGenerator terrainGen;
     private ChunkStore store;
     private ChunkStreamer streamer;
+    private BlockUpdateCenter blockUpdateCenter; // 方块更新中心（随机刻 / 方块联动 / 计划刻统一分派）
 
     // 背包（选择状态唯一权威）：由 Awake 创建，注入给热栏 / 背包窗 / BlockInteraction
     public Backpack Backpack { get; private set; }
@@ -27,7 +28,7 @@ public class World : MonoBehaviour
 
     Camera cam;
 
-    // 豌豆生长 tick 累加器（达到 PEA_GROWTH_TICK_INTERVAL 时清零并扫描全量 tile）
+    // 游戏 tick 累加器（达到 PEA_GROWTH_TICK_INTERVAL=1/20s 时补一个 tick，驱动 BlockUpdateCenter.OnGameTick）
     private float _growthTickAccumulator;
 
     private void Awake()
@@ -36,6 +37,11 @@ public class World : MonoBehaviour
 
         terrainGen = new TerrainGenerator(seed, saver);
         store = new ChunkStore(transform, saver, pos => streamer.RequestMeshRebuild(pos)); // 注入 mesh 重建回调（调用时 streamer 已就绪）
+        // 方块更新中心装配：注入 store（随机刻/计划刻读块、联动写入走 store.SetBlock）；
+        // 订阅写入通知与 chunk 卸载（循环引用用事件订阅解耦，避免构造期交叉引用）
+        blockUpdateCenter = new BlockUpdateCenter(store);
+        store.OnBlockWritten += blockUpdateCenter.OnBlockWritten;
+        store.OnChunkUnloaded += blockUpdateCenter.OnChunkUnloaded;
         streamer = new ChunkStreamer(terrainGen, store, lineOfSight, verticalLineOfSight);
 
         DontDestroyOnLoad(gameObject);
@@ -68,13 +74,14 @@ public class World : MonoBehaviour
         // 相机所在 VC 的坐标变化检测与各队列调度全部交给流式调度器
         streamer.Tick(camPosInt.GetCorrespondingVCPos());
 
-        // 豌豆生长 tick：累加真实经过时间，达到间隔时清零并扫描全量 tile 推进阶段
+        // 方块更新中心：20 tick/秒（PEA_GROWTH_TICK_INTERVAL=1/20s）。deltaTime 累加，while 补 tick
+        // （低帧率一帧跨多个 tick 也全部补上，与 MC 固定 tick 节奏一致）；每补一个 tick 执行一次
+        // OnGameTick（先到期计划刻，后随机刻）
         _growthTickAccumulator += Time.deltaTime;
-        if (_growthTickAccumulator >= Constants.PEA_GROWTH_TICK_INTERVAL)
+        while (_growthTickAccumulator >= Constants.PEA_GROWTH_TICK_INTERVAL)
         {
-            float dt = _growthTickAccumulator;
-            _growthTickAccumulator = 0f;
-            store.TickPeaGrowth(dt); // 传入清零前的实际经过时间
+            _growthTickAccumulator -= Constants.PEA_GROWTH_TICK_INTERVAL;
+            blockUpdateCenter.OnGameTick();
         }
     }
 
@@ -98,7 +105,7 @@ public class World : MonoBehaviour
 
         // 全量入队（空 chunk 无对象不在 world 字典里，无需保存）；
         // OnApplicationQuit 先于 OnDestroy 触发，入队任务由随后 saver.Dispose() 排空落盘。
-        // 存档 v2：主线程内先快照 tile（Saver.SnapshotTiles），随块数据一起入队
+        // 存档 v3：主线程内先快照 tile（Saver.SnapshotTiles），随块数据一起入队
         store.ForEachLoadedChunk((pos, blocks, tiles) => saver.SaveVoxelChunk(pos, blocks, Saver.SnapshotTiles(tiles)));
     }
 

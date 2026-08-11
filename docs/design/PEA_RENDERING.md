@@ -101,3 +101,10 @@
 1. **渲染管线**：Built-in（查实：manifest 无 URP 包、Graphics 无 SRP 引用、材质为内置 Standard + `_Mode:1` Cutout + queue 2450——透明裁剪渲染现成可用）
 2. **豌豆贴图**：程序生成占位（色块/渐变区分生长阶段，玩法验证后美术替换）
 3. **生长机制**：全局 tick（`World.Update` 每 N 秒扫含豌豆 chunk 列表推进阶段）
+
+### 补充落地（2026-08-11，两格高植株）
+
+- 阶段链：0 最小苗 → 1 苗 → **2 两格高植株 → 3 开花结果**（阶段 2/3 为两格高，视觉暂同，花/荚贴图待补）。
+- 顶部格为独立方块 `BlockType.PeaPlantTop=9`（MC tall plant 式：可命中/存档/破坏联动，无 tile）。
+- 贴图：阶段 0/1 用 `CellByStage`（(2,3)/(2,2)）；阶段 2/3 底部格用 `PlantBottomCell(2,5)`、顶部格用 `PlantTopCell(2,4)`（用户已绘制）；原 (2,1)/(2,0) 运行时占位退役。
+- 详见 `docs/design/GROWTH_RANDOM_TICK.md` §4 与 §5。

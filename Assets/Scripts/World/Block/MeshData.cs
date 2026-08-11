@@ -84,11 +84,10 @@ public class MeshData
     }
 
     // 豌豆十字面片：两个交叉四边形（XZ 对角），固定满格高度；双面绘制，法线朝上。
-    // 贴图本身已按阶段绘制植物形态（最小苗/苗/开花/结果），不再用高度压缩表达阶段差异。
-    public void AddPeaQuad(int x, int y, int z, int stage)
+    // cell 由调用方指定（阶段 0/1 单格贴图 / 两格高植株底部与顶部贴图）。
+    public void AddPeaQuadCell(int x, int y, int z, Vector2Int cell)
     {
         float h = 1.0f;
-        Vector2Int cell = PeaTextures.CellByStage[Mathf.Clamp(stage, 0, PeaTextures.CellByStage.Length - 1)];
         float u0 = 1f / totalSize * (sizePerTexture * cell.x + padding);
         float v0 = 1f / totalSize * (sizePerTexture * cell.y + padding);
         float s = 1f / totalSize * pixelPerTexture;
@@ -99,6 +98,16 @@ public class MeshData
 
         AddQuad(vertices, triangles, uvs, normals, a, uv);
         AddQuad(vertices, triangles, uvs, normals, b, uv);
+    }
+
+    // 豌豆十字面片（按生长阶段选贴图）：阶段 0/1 单格用 CellByStage；
+    // 阶段 2/3 为两格高植株——本方法画底部格用 PlantBottomCell（顶部格由 PeaPlantTop 方块单独画 PlantTopCell）
+    public void AddPeaQuad(int x, int y, int z, int stage)
+    {
+        Vector2Int cell = stage >= 2
+            ? PeaTextures.PlantBottomCell
+            : PeaTextures.CellByStage[Mathf.Clamp(stage, 0, PeaTextures.CellByStage.Length - 1)];
+        AddPeaQuadCell(x, y, z, cell);
     }
 
     // 把 4 顶点 + UV 写成 2 三角形；双面共用顶点时法线二选一背面光照会错，

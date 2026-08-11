@@ -132,15 +132,18 @@ public class ChunkStreamer
                         builtCount++;
                         EnqueueMeshBuild(pos);
 
-                        // 存档 v2：把读回的 tile 快照回挂到新创建的 chunk（纯值数组，主线程消费）。
+                        // 存档 v3：把读回的 tile 快照回挂到新创建的 chunk（纯值数组，主线程消费）。
                         // 地物产出的 tile（豌豆丛）走独立 _pendingTileWritesQueue 世界坐标通道，不在此回挂
                         var vc = store.GetChunk(pos);
                         var loadedTiles = d.GetLoadedTiles();
                         if (vc != null && loadedTiles.Length > 0)
                         {
                             foreach (var r in loadedTiles)
-                                vc.SetTile(r.Key, new PeaTileData(new Genome(r.GenomeValue), r.Generation) { GrowthTime = r.GrowthTime });
+                                vc.SetTile(r.Key, new PeaTileData(new Genome(r.GenomeValue), r.Generation));
                         }
+
+                        // 旧档修复：两格高豌豆缺顶/孤儿顶/跨 chunk 顶补齐（新生成世界阶段全为 0，天然无操作）
+                        store.RepairPeaPlants(pos);
                     }
                 }
             }
@@ -158,7 +161,8 @@ public class ChunkStreamer
             {
                 if (setCount >= MAX_BLOCKS_PER_FRAME) break; // 预算耗尽，停止本列表
 
-                if (store.SetBlock(block, pos))
+                // 生成期重放（树冠/地物块）：suppress 方块更新通知（世界刚生成无需联动）
+                if (store.SetBlock(block, pos, suppressUpdate: true))
                 {
                     setCount++;
                 }
@@ -280,8 +284,9 @@ public class ChunkStreamer
     {
         while (_pendingSetBlocksQueue.TryDequeue(out var blockList))
         {
+            // 生成期重放：suppress 方块更新通知
             foreach (var (pos, block) in blockList)
-                store.SetBlock(block, pos);
+                store.SetBlock(block, pos, suppressUpdate: true);
         }
         // 地物 tile 同样排空（避免退出时丢跨 chunk 豌豆 tile；块与 tile 保持一致）
         while (_pendingTileWritesQueue.TryDequeue(out var tileList))

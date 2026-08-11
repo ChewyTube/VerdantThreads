@@ -58,7 +58,7 @@ public class ChunkStore
             action(new(pos.x, pos.y, pos.z), vc.GetBlocksData());
     }
 
-    // 遍历所有已创建的 chunk（含 tile 字典，可能为 null；仅供主线程只读遍历；存档 v2 全量保存用）。
+    // 遍历所有已创建的 chunk（含 tile 字典，可能为 null；仅供主线程只读遍历；存档 v3 全量保存用）。
     // 调用方须在主线程内对 tiles 做快照（Saver.SnapshotTiles），worker 只读快照数组。
     public void ForEachLoadedChunk(Action<VCPosInWorld, Block[,,], Dictionary<ushort, PeaTileData>> action)
     {
@@ -66,8 +66,16 @@ public class ChunkStore
             action(new(pos.x, pos.y, pos.z), vc.GetBlocksData(), vc.TilesRaw);
     }
 
-    // 跨 chunk 方块写入：目标未创建但为已标记的空区块时按需创建；目标不在视距盒内返回 false
+    // 跨 chunk 方块写入：目标未创建但为已标记的空区块时按需创建；目标不在视距盒内返回 false。
+    // 写入成功且旧块 != 新块、未 suppress → 触发 OnBlockWritten（BlockUpdateCenter 分派本位置 + 6 邻居联动）。
     public bool SetBlock(Block block, BlockPosInWorld pos)
+    {
+        return SetBlock(block, pos, suppressUpdate: false);
+    }
+
+    // suppressUpdate=true：写入但不触发方块更新通知（生成期 pendingBlocks 重放 / 存档修复用，
+    // 世界刚生成/修复无需联动）。变化检测：旧块 == 新块时跳过写入与通知（优化 + 防循环）。
+    public bool SetBlock(Block block, BlockPosInWorld pos, bool suppressUpdate)
     {
         VCPosInWorld vcPos = pos.GetCorrespondingVCPos();
         BlockPosInVoxelChunk bPos = pos.GetCorrespondingPosInVC();
@@ -88,9 +96,21 @@ public class ChunkStore
             }
         }
 
+        Block[,,] blocks = targetChunk.GetBlocksData();
+        Block oldBlock = blocks[bPos.X, bPos.Y, bPos.Z];
+        if (oldBlock == block) return true; // 无变化：跳过写入与通知（优化 + 防循环）
+
         targetChunk.SetBlock(block, bPos.X, bPos.Y, bPos.Z);
+
+        // 写入成功且未 suppress → 通知方块更新中心（联动判定用旧块，位置与 6 邻居分派在其中完成）
+        if (!suppressUpdate)
+            OnBlockWritten?.Invoke(pos, oldBlock, block);
+
         return true;
     }
+
+    // 方块写入通知（主线程）：由 World 装配时订阅到 BlockUpdateCenter（本位置 + 6 邻居联动分派）
+    public event Action<BlockPosInWorld, Block, Block> OnBlockWritten;
 
     // ---- tile 跨 chunk 路由（与 SetBlock 同构；仅主线程访问）----
 
@@ -149,44 +169,101 @@ public class ChunkStore
     private static ushort TileKey(BlockPosInVoxelChunk pos)
         => (ushort)((pos.X << (Constants.CHUNK_SIZE_LOG2 * 2)) | (pos.Y << Constants.CHUNK_SIZE_LOG2) | pos.Z);
 
-    // 豌豆生长扫描：遍历所有已创建 chunk 的 tile，累加真实生长时间并推进阶段（仅主线程）。
-    // tile 的 GrowthTime 是唯一时间源，阶段只进不退；阶段推进走 SetBlock 置 changed，
-    // 由 VoxelChunk.Update 下一帧自动请求 mesh 重建，贴图随阶段切换。
-    public void TickPeaGrowth(float dt)
+    // 旧档完整性修复：扫描该 chunk 全部 16³ 格，修复两格高豌豆（PeaStem 阶段≥2 缺顶部 /
+    // 孤儿 PeaPlantTop / 跨 chunk「底部在 y=15、顶部在邻居 y=0」）。
+    // 主线程调用（ChunkStreamer 创建 chunk 成功后）；读邻居用 GetChunkBlocks（null=未加载跳过，
+    // 等邻居 chunk 创建时它自己跑修复轮兜底），写用 SetBlock（false=目标不在视距内跳过）。
+    public void RepairPeaPlants(VCPosInWorld vcPos)
     {
-        foreach (var (_, vc) in world)
-        {
-            // 直接读底层字典避免惰性创建空字典；无 tile 的 chunk 跳过
-            var tiles = vc.TilesRaw;
-            if (tiles == null || tiles.Count == 0) continue;
+        Block[,,] blocks = GetChunkBlocks(vcPos);
+        if (blocks == null) return;
 
-            Block[,,] blocks = vc.GetBlocksData();
-            foreach (var kv in tiles)
-            {
-                PeaTileData tile = kv.Value;
-                tile.GrowthTime += dt;
-
-                // 目标阶段：由累计生长时间决定（最小苗→苗→开花→结果，阶段只进不退）
-                int newStage = tile.GrowthTime >= Constants.PEA_STAGE_3_SECONDS ? 3
-                    : tile.GrowthTime >= Constants.PEA_STAGE_2_SECONDS ? 2
-                    : tile.GrowthTime >= Constants.PEA_STAGE_1_SECONDS ? 1
-                    : 0;
-
-                // 当前阶段：从 chunk 块数组读（GetBlockState() 低 2 位状态位）
-                ushort key = kv.Key;
-                int x = key >> (Constants.CHUNK_SIZE_LOG2 * 2);
-                int y = (key >> Constants.CHUNK_SIZE_LOG2) & (Constants.CHUNK_SIZE - 1);
-                int z = key & (Constants.CHUNK_SIZE - 1);
-
-                int currentStage = (int)(blocks[x, y, z].GetBlockState() & BlockBits.StageMask);
-
-                // 阶段只进不退：目标 > 当前才更新方块状态位
-                if (newStage > currentStage)
+        int s = Constants.CHUNK_SIZE;
+        for (int x = 0; x < s; x++)
+            for (int y = 0; y < s; y++)
+                for (int z = 0; z < s; z++)
                 {
-                    vc.SetBlock(blocks[x, y, z].WithStage((uint)newStage), x, y, z);
+                    Block b = blocks[x, y, z];
+                    if (b.GetBlockType() == BlockType.PeaStem)
+                    {
+                        // 阶段 ≥2 的两格高植株：上方缺 PeaPlantTop → 补顶
+                        if ((int)(b.GetBlockState() & BlockBits.StageMask) >= 2)
+                            RepairEnsureTop(vcPos, blocks, x, y, z);
+                    }
+                    else if (b.GetBlockType() == BlockType.PeaPlantTop)
+                    {
+                        RepairRemoveOrphanTop(vcPos, blocks, x, y, z); // 下方不是阶段≥2 的 PeaStem → 清孤儿顶
+                    }
+                    else if (y == 0 && b.GetBlockType() == BlockType.Air)
+                    {
+                        RepairTopFromBelow(vcPos, x, z); // y=0 Air：下方（邻居 y=15）若是阶段≥2 豌豆 → 补顶
+                    }
                 }
-            }
+    }
+
+    // 阶段≥2 的 PeaStem 上方格非 PeaPlantTop 时：上方为 Air 则补顶部（PeaPlantTop）
+    private void RepairEnsureTop(VCPosInWorld vcPos, Block[,,] blocks, int x, int y, int z)
+    {
+        int s = Constants.CHUNK_SIZE;
+        int topLocalY = y + 1;
+
+        BlockType topType;
+        if (topLocalY < s)
+        {
+            topType = blocks[x, topLocalY, z].GetBlockType();
         }
+        else
+        {
+            Block[,,] up = GetChunkBlocks(new VCPosInWorld(vcPos.X, vcPos.Y + 1, vcPos.Z));
+            if (up == null) return; // 上方 chunk 未加载：跳过，等它加载后由自身修复轮处理
+            topType = up[x, 0, z].GetBlockType();
+        }
+
+        if (topType == BlockType.PeaPlantTop) return; // 顶部已存在
+        if (topType != BlockType.Air) return;         // 上方被其他方块占：保持现状，不破坏既有内容
+
+        SetBlock(BlockRegistry.PeaPlantTop, new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + topLocalY, vcPos.Z * s + z), suppressUpdate: true); // 补顶部（存档修复不触发方块更新；false=目标未加载则跳过）
+    }
+
+    // 孤儿顶部：下方不是 PeaStem（或阶段<2）→ 顶部置 Air 清除
+    private void RepairRemoveOrphanTop(VCPosInWorld vcPos, Block[,,] blocks, int x, int y, int z)
+    {
+        int s = Constants.CHUNK_SIZE;
+        int belowLocalY = y - 1;
+
+        Block below = BlockRegistry.Air;
+        if (belowLocalY >= 0)
+        {
+            below = blocks[x, belowLocalY, z];
+        }
+        else
+        {
+            Block[,,] down = GetChunkBlocks(new VCPosInWorld(vcPos.X, vcPos.Y - 1, vcPos.Z));
+            if (down == null) return; // 下方 chunk 未加载：跳过
+            below = down[x, s - 1, z];
+        }
+
+        // 合法底部 = PeaStem 且阶段 ≥ 2（两格高植株的顶部格才有存在意义）
+        bool validBottom = below.GetBlockType() == BlockType.PeaStem
+            && (int)(below.GetBlockState() & BlockBits.StageMask) >= 2;
+        if (!validBottom)
+        {
+            SetBlock(BlockRegistry.Air, new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y, vcPos.Z * s + z), suppressUpdate: true); // 清除孤儿顶（存档修复不触发方块更新）
+        }
+    }
+
+    // y=0 层 Air 格：下方格（邻居 chunk y=15）若是阶段≥2 的 PeaStem → 补顶部（覆盖跨 chunk 情形）
+    private void RepairTopFromBelow(VCPosInWorld vcPos, int x, int z)
+    {
+        int s = Constants.CHUNK_SIZE;
+        Block[,,] down = GetChunkBlocks(new VCPosInWorld(vcPos.X, vcPos.Y - 1, vcPos.Z));
+        if (down == null) return; // 下方 chunk 未加载：跳过
+
+        Block below = down[x, s - 1, z];
+        if (below.GetBlockType() != BlockType.PeaStem) return;
+        if ((int)(below.GetBlockState() & BlockBits.StageMask) < 2) return;
+
+        SetBlock(BlockRegistry.PeaPlantTop, new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s, vcPos.Z * s + z), suppressUpdate: true); // 补顶部（存档修复不触发方块更新）
     }
 
     // 创建非空 chunk 对象；重复创建返回 false（不负责入队 mesh 构建，由调用方处理）
@@ -237,7 +314,7 @@ public class ChunkStore
             return;
         }
 
-        // 存档 v2：主线程内先快照 tile（Saver.SnapshotTiles 纯复制，worker 只读快照数组），随块数据一起保存
+        // 存档 v3：主线程内先快照 tile（Saver.SnapshotTiles 纯复制，worker 只读快照数组），随块数据一起保存
         saver.SaveVoxelChunk(new(pos.x, pos.y, pos.z), vc.GetBlocksData(), Saver.SnapshotTiles(vc.TilesRaw));
 
         ReturnChunkToPool(vc);

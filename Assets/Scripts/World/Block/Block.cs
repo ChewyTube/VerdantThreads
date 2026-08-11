@@ -54,7 +54,7 @@ public readonly struct Block : IEquatable<Block>
 
 // 块值位布局：
 //   bit0-15  类型（TypeMask）
-//   bit16-17 生长阶段（0=苗 1=开花 2=结荚，豌豆 PeaStem 用）
+//   bit16-17 生长阶段（0=最小苗 1=苗 2=两格高植株 3=开花结果，豌豆 PeaStem 用；PeaPlantTop 顶部格无阶段）
 //   bit18-31 通用渲染状态预留（14 bit；原 7 位孟德尔性状预留已废除，基因数据移入 Genome）
 public static class BlockBits
 {
@@ -77,5 +77,6 @@ public enum BlockType : uint
     Log = 6,
     Leaves = 7,
     PeaStem = 8,
+    PeaPlantTop = 9, // 豌豆两格高植株的顶部格（MC tall plant 式：可被射线命中/存档/破坏联动；无 tile）
 }
 

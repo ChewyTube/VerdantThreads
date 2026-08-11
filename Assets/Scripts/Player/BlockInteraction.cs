@@ -47,19 +47,22 @@ public class BlockInteraction : MonoBehaviour
         }
     }
 
-    // 破坏逻辑：命中且非世界最底层 Bedrock 则置为 Air，并重建相关 chunk mesh
+    // 破坏逻辑：命中且非世界最底层 Bedrock 则置为 Air，并重建相关 chunk mesh。
+    // 豌豆两格高植株的顶/底破坏联动已迁入 BlockUpdateCenter（DispatchBlockUpdate）——本方法只管写入 + 重建
     private void TryBreakBlock()
     {
         if (!RaycastVoxel(out BlockPosInWorld hit, out _)) return;
 
-        // 破坏前记录方块类型：豌豆被破坏时联动移除 tile（生长数据随方块消失）
-        BlockType hitType = GetBlockTypeAt(hit);
+        // 破坏前记录方块信息：Bedrock 守卫与 tile 移除需要类型/块值
+        Block hitBlock = GetBlockAt(hit);
+        BlockType hitType = hitBlock.GetBlockType();
 
         // 射线只命中非 Air 方块；世界最底层（Y=0）Bedrock 不可破坏，防止挖穿世界底
         if (hit.Y == 0 && hitType == BlockType.Bedrock) return;
 
+        // 置 Air（触发更新中心：破坏 PeaStem 阶段≥2 → 上方 PeaPlantTop 清除；破坏 PeaPlantTop → 下方退回阶段 0）
         world.SetBlock(BlockRegistry.Air, hit);
-        // 破坏联动：豌豆方块被破坏 → 移除对应 tile（tile 与方块生命周期一致）
+        // 豌豆底部格持有 tile，破坏即移除（tile 与方块生命周期一致；顶部格无 tile）
         if (hitType == BlockType.PeaStem)
         {
             world.RemoveTile(hit);
@@ -186,14 +189,14 @@ public class BlockInteraction : MonoBehaviour
         return blocks[x & mask, y & mask, z & mask].GetBlockType() != BlockType.Air;
     }
 
-    // 获取世界坐标处的方块类型（未加载 chunk 返回 Air）
-    private BlockType GetBlockTypeAt(BlockPosInWorld pos)
+    // 获取世界坐标处的方块完整值（含阶段状态位；未加载 chunk 返回 Air）
+    private Block GetBlockAt(BlockPosInWorld pos)
     {
         Block[,,] blocks = world.GetChunkBlocks(pos.GetCorrespondingVCPos());
-        if (blocks == null) return BlockType.Air;
+        if (blocks == null) return BlockRegistry.Air;
 
         int mask = Constants.CHUNK_SIZE - 1;
-        return blocks[pos.X & mask, pos.Y & mask, pos.Z & mask].GetBlockType();
+        return blocks[pos.X & mask, pos.Y & mask, pos.Z & mask];
     }
 
     // 重建目标 chunk 及其 6 个相邻 chunk 的 mesh（内部去重，未加载 chunk 安全跳过）
