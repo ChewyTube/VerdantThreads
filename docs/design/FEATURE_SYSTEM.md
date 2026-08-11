@@ -1,7 +1,7 @@
 # 地物系统（Feature System）
 
-> 状态：**已实现（2026-08-11）**。生成期地物框架 + 两个地物（树、豌豆自然生成）。
-> 关联：`GAME_DESIGN.md`（环境装饰）、`TODO_LIST.md`「其他待办 - 豌豆自然生成」。
+> 状态：**已实现（2026-08-11）**。生成期地物框架 + 两个地物（树、豌豆丛生）。
+> 关联：`GAME_DESIGN.md`（环境装饰）、`TODO_LIST.md`「其他待办 - 豌豆自然生成」、`PEA_CLUMP_FEATURE.md`（丛生设计定案）。
 
 ## 1. 概念
 
@@ -33,13 +33,14 @@ public abstract class Feature
 
 ```
 Assets/Scripts/World/Feature/
-├── Feature.cs      # 抽象基类（契约见 §2）
-├── TreeFeature.cs  # 香樟风球冠树（从 TerrainGenerator 1:1 搬迁）
-└── PeaFeature.cs   # 豌豆自然生成（密度哈希 + 确定性基因 + tile 登记）
+├── Feature.cs         # 抽象基类（契约见 §2）
+├── TreeFeature.cs     # 香樟风球冠树（从 TerrainGenerator 1:1 搬迁）
+└── PeaClumpFeature.cs # 豌豆丛生（整丛母本基因 + 每株微变异，见 PEA_CLUMP_FEATURE.md）
 ```
 
-装配点：`TerrainGenerator` 构造函数 `features = new Feature[] { new TreeFeature(), new PeaFeature() };`
-顺序即放置优先级（树先、豌豆后；豌豆靠 Air 检查避让树干）。
+装配点：`TerrainGenerator` 构造函数 `features = new Feature[] { new TreeFeature(), new PeaClumpFeature(heightAt) };`
+顺序即放置优先级（树先、豌豆丛后；豌豆丛靠 Air 检查避让树干）；`heightAt` 为列高度纯函数
+（与地形填充同公式，后台线程安全）。
 
 锚点逻辑（`GenerateVoxelChunkData` 列循环尾部，地形填充完成后）：
 
@@ -69,31 +70,33 @@ if (anchorLocalY >= 0 && anchorLocalY < CHUNK_SIZE)
   trunkTop / crownCenterY / 球方程逐层半径 / 树干格跳过 / 边缘缺角）逐字保留。
 - 跨界写入（树干/树冠越出本 chunk）由 `Setblock → pendingBlocks` 处理，与原先一致。
 
-### 4.2 豌豆自然生成（PeaFeature）
+### 4.2 豌豆丛生（PeaClumpFeature，详见 `PEA_CLUMP_FEATURE.md`）
 
-- `CanPlace`：
-  - 密度哈希：`(blockX·7 + blockZ·13 + groundY·29) % PEA_FEATURE_DENSITY == 0`
-    （`PEA_FEATURE_DENSITY = 64` → 约 1/64 列一棵，越小越密）；
-  - 目标格 Air 检查：`data.GetBlocksData()[lx, anchorLocalY, lz]` 为 Air 才可放（避让树干）。
-- `Place`：
-  - `data.Setblock(BlockRegistry.GetBlock(BlockType.PeaStem), lx, anchorLocalY, lz)`（默认状态 = 阶段 0）；
-  - 登记 tile：`data.AddPendingTile(key, genome)`，key 公式与 `ChunkStore.TileKey` 一致
-    `(x<<8)|(y<<4)|z`，世代 0、生长时间 0；
-  - **确定性基因**：`(blockX·73856093 ^ groundY·19349663 ^ blockZ·83492791) & 0x0FFFFFFF`
-    （28 bit 装得下），保证同坐标重启后基因一致。
+- `CanPlace`：只在**丛中心列**返回 true
+  - 密度哈希：`(blockX·7 + blockZ·13 + groundY·29) % PEA_CLUMP_DENSITY == 0`
+    （`PEA_CLUMP_DENSITY = 256` → 约 1/256 列一丛，越小越密）；
+  - 中心格 Air 检查：`data.GetBlocksData()[lx, anchorLocalY, lz]` 为 Air 才可放（避让树干）。
+- `Place`：由中心坐标确定性派生整丛（14-18 株聚簇）
+  - 母本基因：丛中心世界坐标哈希派生（28 bit）；
+  - 株数、半径内每株偏移（确定性 jitter）——全部由中心哈希派生，同坐标重启结果一致；
+  - 每株高度取**它自己列**地表+1（构造函数注入 `heightAt` 纯函数）；
+  - 每株基因 = 母本 + 株坐标哈希驱动的 1-2 个等位基因位 0↔1 翻转（确定性微变异）；
+  - 每株独立 Air 检查（仅本 chunk 内有效）；跨 chunk 株：块走 `Setblock → pendingBlocks`、
+    tile 走 `AddPendingTileWrite → pendingTileWrites`，两条路在目标 chunk 汇合。
 
-## 5. tile 出站通道（pendingTiles）
+## 5. tile 出站通道（pendingTileWrites，世界坐标版）
 
-生成期地物若需要 tile（如豌豆），后台线程通过 `VoxelChunkData.AddPendingTile(ushort key, Genome genome)`
-登记纯值记录（`TileSaveRecord`，已在 `Saver.cs` 定义）；主线程在 `ChunkStreamer.Tick` 的
-`store.CreateChunk` 成功后，把 **loadedTiles（存档读回）与 pendingTiles（地物生成）两来源统一回挂**
-到 chunk 的 tile 字典（同一转换路径），再进入既有生长/存档流程。
+生成期地物若需要 tile（如豌豆丛），后台线程通过 `VoxelChunkData.AddPendingTileWrite(BlockPosInWorld pos, Genome genome)`
+登记**世界坐标**纯值记录；主线程在 `ChunkStreamer.Tick` 的平行队列 `_pendingTileWritesQueue` 按帧预算路由：
+目标 chunk 已加载 → `store.SetTile` 转局部 key 写入；视距内未加载 → 下帧重试；视距外丢弃
+（与 `_pendingSetBlocksQueue` 语义完全一致）。丛内每株 = 块走旧通道 + tile 走新通道，两条路在
+目标 chunk 汇合。存档读回（loadedTiles）仍在 `CreateChunk` 成功后直接回挂，与本通道互不影响。
 
 ## 6. 如何新增地物（三步）
 
 1. 在 `Assets/Scripts/World/Feature/` 写子类：`CanPlace` 做确定性哈希 + 可用性检查，
    `Place` 用 `data.Setblock` 写方块（跨界自动进 pendingBlocks）；需要 tile 就
-   `data.AddPendingTile(key, genome)`。
+   `data.AddPendingTileWrite(worldPos, genome)`（世界坐标通道，主线程自动路由到目标 chunk）。
 2. 在 `TerrainGenerator` 构造函数装配进 `features` 数组（顺序 = 放置优先级）。
 3. 需要新参数（如密度）时加进 `Constants.cs`，不硬编码魔数。
 
@@ -107,7 +110,7 @@ if (anchorLocalY >= 0 && anchorLocalY < CHUNK_SIZE)
 ## 8. 验证方法（Play Mode）
 
 1. 删除存档（`Application.persistentDataPath/world_saves/`）后启动 → 树外观与原版完全一致；
-   草地上随机出现阶段 0 豌豆苗（最小苗贴图）。
-2. 记下某棵豌豆的世界坐标 → 退出重启（不删档）→ 同坐标豌豆分布一致、基因/生长阶段保留
-   （存档 v2 读回 + pendingTiles 回挂链路）。
+   草地上随机出现**一丛一丛**的阶段 0 豌豆苗（14-18 株聚簇，详见 `PEA_CLUMP_FEATURE.md` §6）。
+2. 记下某丛豌豆的世界坐标 → 退出重启（不删档）→ 同坐标豌豆分布/株数/每株基因完全一致，
+   生长阶段保留（存档 v2 读回 + pendingTileWrites 路由链路）。
 3. 豌豆苗随时间进入 苗→开花→结果（贴图/十字面片高度逐阶段变化），卸载重载后阶段不倒退。

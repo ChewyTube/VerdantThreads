@@ -15,6 +15,7 @@
 - [x] **Step 0** 存档续写修复：`SimpleRegionWriter` 改 `OpenOrCreate` + 读旧索引续写（含旧扇区复用防膨胀）
 - [x] **物品栏与背包系统**（阶段二，`docs/design/INVENTORY_SYSTEM.md`）：`ItemInstance` + `Backpack`（选择状态唯一权威）+ `HotbarWindow`（9 槽/图集图标/左上角 1-9/选中高亮）+ `BackpackWindow`（E 键/点击选中）；`BlockInteraction` 放置改读 Backpack
 - [x] **地物系统（Feature）**（`docs/design/FEATURE_SYSTEM.md`）：生成期地物抽象（`Feature` 基类 + `TerrainGenerator` 锚点装配）；树从 `TerrainGenerator` 内嵌代码 1:1 搬入 `TreeFeature`（外观不变）；新增 `PeaFeature` 豌豆自然生成（密度哈希 + 确定性基因 + `AddPendingTile` 通道，主线程 CreateChunk 后与存档读回统一回挂）
+- [x] **豌豆丛生（PeaClumpFeature）**（`docs/design/PEA_CLUMP_FEATURE.md`）：豌豆单株生成改为丛生（每丛 14-18 株聚簇，中心密度哈希 + 半径内确定性 jitter；2026-08-11 调参：密度 64→256、株数 3-6→14-18、半径 2→3）；整丛共享母本基因 + 每株株坐标哈希确定性微变异（1-2 个等位基因位 0↔1 翻转）；tile 通道升级为世界坐标版 `pendingTileWrites`（`ChunkStreamer` 新增平行重试队列 `_pendingTileWritesQueue`，跨 chunk 块走 pendingBlocks / tile 走新通道，两条路在目标 chunk 汇合）；`PeaFeature.cs` 已删除、`PEA_FEATURE_DENSITY` → `PEA_CLUMP_DENSITY`/`MIN`/`MAX`/`RADIUS` 常量
 
 ## 基因系统路线图（架构评审 @oracle 已定案）⏳
 

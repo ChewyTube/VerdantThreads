@@ -22,5 +22,8 @@ public static class Constants
     public const float PEA_STAGE_3_SECONDS = 60f;       // 开花→结果所需生长时间（秒，可调）
 
     // ---- 地物系统 ----
-    public const int PEA_FEATURE_DENSITY = 64;          // 豌豆自然生成密度（哈希取模分母，越小越密；约 1/64 列一棵）
+    public const int PEA_CLUMP_DENSITY = 256;           // 豌豆丛中心频率（哈希取模分母，越小越密；约 1/256 列一丛，每丛 14-18 株）
+    public const int PEA_CLUMP_MIN_PLANTS = 14;         // 每丛最少株数
+    public const int PEA_CLUMP_MAX_PLANTS = 18;         // 每丛最多株数（均值 16 左右）
+    public const int PEA_CLUMP_RADIUS = 3;              // 丛内株距中心的最大水平偏移（格）
 }

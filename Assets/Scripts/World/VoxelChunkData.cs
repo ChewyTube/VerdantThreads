@@ -13,9 +13,10 @@ public class VoxelChunkData
     // 默认空数组，读路径（GenerateVoxelChunkData 命中存档）用 SetLoadedTiles 注入。
     private TileSaveRecord[] loadedTiles = Array.Empty<TileSaveRecord>();
 
-    // 生成期地物产出的 tile（豌豆自然生成）：后台生成线程写入，主线程 CreateChunk 成功后消费。
-    // 与 loadedTiles 平行，同为纯值数组跨线程。
-    private readonly List<TileSaveRecord> pendingTiles = new List<TileSaveRecord>();
+    // 生成期地物产出的 tile（豌豆丛）：后台生成线程写入，主线程按世界坐标路由到目标 chunk（跨 chunk 重试）。
+    // 与 pendingBlocks 平行：块走 Setblock → pendingBlocks、tile 走本通道，两条路在目标 chunk 汇合。
+    // 纯值元组（BlockPosInWorld, Genome）跨线程安全。
+    private readonly List<(BlockPosInWorld, Genome)> pendingTileWrites = new List<(BlockPosInWorld, Genome)>();
 
     public VoxelChunkData(Block[,,] blocks, VCPosInWorld pos, List<(BlockPosInWorld, Block)> pendingBlocks, bool fillAir = true)
     {
@@ -76,16 +77,16 @@ public class VoxelChunkData
         return loadedTiles;
     }
 
-    // 后台线程调用：登记一个地物产出的豌豆 tile（世代 0、生长时间 0 = 阶段 0 苗）
-    public void AddPendingTile(ushort key, Genome genome)
+    // 后台线程调用：登记一个豌豆 tile（世代 0、生长时间 0 = 阶段 0 苗）
+    public void AddPendingTileWrite(BlockPosInWorld pos, Genome genome)
     {
-        pendingTiles.Add(new TileSaveRecord { Key = key, GenomeValue = genome.Value, Generation = 0, GrowthTime = 0 });
+        pendingTileWrites.Add((pos, genome));
     }
 
-    // 主线程消费：返回全部待回挂 tile 记录（纯值数组跨线程安全）
-    public TileSaveRecord[] GetPendingTiles()
+    // 主线程消费：返回全部待路由 tile 记录
+    public (BlockPosInWorld, Genome)[] GetPendingTileWrites()
     {
-        return pendingTiles.ToArray();
+        return pendingTileWrites.ToArray();
     }
     public VCPosInWorld GetPos()
     {

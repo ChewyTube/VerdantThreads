@@ -19,11 +19,13 @@ public class ChunkStreamer
     private const int MAX_MESH_UPLOAD_PER_FRAME = 8;    // 每帧 mesh 上传上限（可调）
     private const int MAX_MESH_BUILD_SPAWN_PER_FRAME = 24; // 每帧启动后台 mesh 构建的上限（可调）
     private const int MAX_BLOCKS_PER_FRAME = 64;
+    private const int MAX_TILES_PER_FRAME = 64;      // 每帧 tile 路由上限（地物豌豆丛跨 chunk tile，单丛 14-18 株）
     private const int MAX_FRAME_WORK_BUDGET_MS = 6; // 构建/优化每帧主线程耗时预算（毫秒，可调）
     private readonly System.Diagnostics.Stopwatch _frameWorkStopwatch = new();
 
     private readonly ConcurrentQueue<VoxelChunkData> _pendingBuildQueue = new();
     private readonly ConcurrentQueue<List<(BlockPosInWorld, Block)>> _pendingSetBlocksQueue = new();
+    private readonly ConcurrentQueue<List<(BlockPosInWorld, Genome)>> _pendingTileWritesQueue = new(); // 地物 tile 跨 chunk 路由（与 pendingBlocks 语义一致，主线程重放）
     private readonly ConcurrentQueue<(VCPosInWorld, MeshData)> _pendingMeshUploadQueue = new();        // 后台已生成的 MeshData，待主线程就近上传
 
     // ④ 近处优先 + 只补新暴露环
@@ -130,16 +132,13 @@ public class ChunkStreamer
                         builtCount++;
                         EnqueueMeshBuild(pos);
 
-                        // 统一回挂 tile：存档读回（loadedTiles）+ 地物生成（pendingTiles，豌豆自然生成）
-                        // 两来源，同一转换路径（纯值数组，主线程消费）
+                        // 存档 v2：把读回的 tile 快照回挂到新创建的 chunk（纯值数组，主线程消费）。
+                        // 地物产出的 tile（豌豆丛）走独立 _pendingTileWritesQueue 世界坐标通道，不在此回挂
                         var vc = store.GetChunk(pos);
                         var loadedTiles = d.GetLoadedTiles();
-                        var pendingTiles = d.GetPendingTiles();
-                        if (vc != null && (loadedTiles.Length > 0 || pendingTiles.Length > 0))
+                        if (vc != null && loadedTiles.Length > 0)
                         {
                             foreach (var r in loadedTiles)
-                                vc.SetTile(r.Key, new PeaTileData(new Genome(r.GenomeValue), r.Generation) { GrowthTime = r.GrowthTime });
-                            foreach (var r in pendingTiles)
                                 vc.SetTile(r.Key, new PeaTileData(new Genome(r.GenomeValue), r.Generation) { GrowthTime = r.GrowthTime });
                         }
                     }
@@ -180,6 +179,37 @@ public class ChunkStreamer
         if (retryBlocks.Count > 0)
         {
             _pendingSetBlocksQueue.Enqueue(retryBlocks); // 视距内的失败写入重新入队，下一帧重试
+        }
+        // 地物 tile 路由：主线程按世界坐标 SetTile；目标 chunk 已加载即成功，未加载且在视距内则下帧重试（与 pendingBlocks 语义一致）
+        int tileSetCount = 0;
+        var retryTiles = new List<(BlockPosInWorld, Genome)>();
+        while (tileSetCount < MAX_TILES_PER_FRAME && _pendingTileWritesQueue.TryDequeue(out var tileList))
+        {
+            int consumed = 0;
+            foreach (var (pos, genome) in tileList)
+            {
+                if (tileSetCount >= MAX_TILES_PER_FRAME) break; // 预算耗尽，停止本列表
+
+                if (store.SetTile(pos, new PeaTileData(genome, 0))) // 目标 chunk 已加载 → 成功
+                {
+                    tileSetCount++;
+                }
+                else if (IsWithinViewDistance(pos.GetCorrespondingVCPos()))
+                {
+                    retryTiles.Add((pos, genome)); // 视距内未加载：下帧重试（等邻居 chunk 加载后补齐）
+                }
+                consumed++;
+            }
+
+            // 列表被部分消费时，剩余部分重新入队，留到下一帧处理，避免丢数据
+            if (consumed < tileList.Count)
+            {
+                _pendingTileWritesQueue.Enqueue(tileList.GetRange(consumed, tileList.Count - consumed));
+            }
+        }
+        if (retryTiles.Count > 0)
+        {
+            _pendingTileWritesQueue.Enqueue(retryTiles); // 视距内的失败写入重新入队，下一帧重试
         }
         int spawnCount = 0;
         if (_pendingMeshBuild.Count > 0)
@@ -252,6 +282,12 @@ public class ChunkStreamer
         {
             foreach (var (pos, block) in blockList)
                 store.SetBlock(block, pos);
+        }
+        // 地物 tile 同样排空（避免退出时丢跨 chunk 豌豆 tile；块与 tile 保持一致）
+        while (_pendingTileWritesQueue.TryDequeue(out var tileList))
+        {
+            foreach (var (pos, genome) in tileList)
+                store.SetTile(pos, new PeaTileData(genome, 0));
         }
     }
 
@@ -328,6 +364,10 @@ public class ChunkStreamer
                 // 跨 chunk 挂起写入（树冠等）随数据一起入队，由主线程按帧预算重放
                 if (data.GetPendingBlocks().Count > 0)
                     _pendingSetBlocksQueue.Enqueue(data.GetPendingBlocks());
+                // 地物 tile（豌豆丛跨 chunk）入平行队列，主线程按帧预算路由到目标 chunk
+                var tileWrites = data.GetPendingTileWrites();
+                if (tileWrites.Length > 0)
+                    _pendingTileWritesQueue.Enqueue(new List<(BlockPosInWorld, Genome)>(tileWrites));
             }
             catch (Exception ex)
             {

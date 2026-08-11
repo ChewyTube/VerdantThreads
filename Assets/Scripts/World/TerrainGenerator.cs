@@ -2,26 +2,31 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-// 地形生成器：噪声地形 + 地物系统（树/豌豆自然生成）+ 存档读路径（#14）。
+// 地形生成器：噪声地形 + 地物系统（树/豌豆丛）+ 存档读路径（#14）。
 // 纯生成逻辑，不碰任何调度队列与 Unity 主线程对象，可在后台线程调用；
 // 确定性（固定 seed + 位置公式）保证同坐标永远生成同一结果，与存档数据可复现。
-// 地物见 World/Feature/（Feature 基类 + TreeFeature + PeaFeature）：列循环地形填充完成后
-// 统一按锚点放置，跨界写入由 data.Setblock → pendingBlocks 处理。
+// 地物见 World/Feature/（Feature 基类 + TreeFeature + PeaClumpFeature）：列循环地形填充完成后
+// 统一按锚点放置，跨界写入由 data.Setblock → pendingBlocks / AddPendingTileWrite 处理。
 public class TerrainGenerator
 {
     // 被多个后台生成 Task 并发只读调用（GetNoise），FastNoiseLite 只读线程安全；禁止在后台线程重新配置/写入 noise
     private readonly FastNoiseLite noise = new FastNoiseLite();
     private readonly int seed;
     private readonly Saver saver; // 读路径：生成前先查存档，命中则用已保存数据（含玩家修改）
-    private readonly Feature[] features; // 地物列表（生成期装饰物：树/豌豆自然生成）
+    private readonly Feature[] features; // 地物列表（生成期装饰物：树/豌豆丛）
 
     public TerrainGenerator(int seed, Saver saver)
     {
         this.seed = seed;
         this.saver = saver;
         InitializeNoise();
-        // 地物装配：顺序即放置优先级（树先、豌豆后；豌豆靠 Air 检查避让树干）
-        features = new Feature[] { new TreeFeature(), new PeaFeature() };
+        // 地物装配：顺序即放置优先级（树先、豌豆丛后；豌豆丛靠 Air 检查避让树干）
+        // 豌豆丛注入列高度函数（与地形填充同公式，纯函数、后台线程安全）
+        features = new Feature[]
+        {
+            new TreeFeature(),
+            new PeaClumpFeature((bx, bz) => (int)((noise.GetNoise(bx, bz) + 1) * 0.5f * 64)),
+        };
     }
 
     private void InitializeNoise()
