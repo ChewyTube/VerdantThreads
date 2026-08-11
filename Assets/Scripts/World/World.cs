@@ -27,6 +27,9 @@ public class World : MonoBehaviour
 
     Camera cam;
 
+    // 豌豆生长 tick 累加器（达到 PEA_GROWTH_TICK_INTERVAL 时清零并扫描全量 tile）
+    private float _growthTickAccumulator;
+
     private void Awake()
     {
         saver.Initialize(); // 主线程解析保存根目录（Application.persistentDataPath 不能从后台线程读取）
@@ -64,6 +67,15 @@ public class World : MonoBehaviour
 
         // 相机所在 VC 的坐标变化检测与各队列调度全部交给流式调度器
         streamer.Tick(camPosInt.GetCorrespondingVCPos());
+
+        // 豌豆生长 tick：累加真实经过时间，达到间隔时清零并扫描全量 tile 推进阶段
+        _growthTickAccumulator += Time.deltaTime;
+        if (_growthTickAccumulator >= Constants.PEA_GROWTH_TICK_INTERVAL)
+        {
+            float dt = _growthTickAccumulator;
+            _growthTickAccumulator = 0f;
+            store.TickPeaGrowth(dt); // 传入清零前的实际经过时间
+        }
     }
 
     void OnDestroy()
@@ -85,8 +97,9 @@ public class World : MonoBehaviour
         streamer.DrainPendingSetBlocks();
 
         // 全量入队（空 chunk 无对象不在 world 字典里，无需保存）；
-        // OnApplicationQuit 先于 OnDestroy 触发，入队任务由随后 saver.Dispose() 排空落盘
-        store.ForEachLoadedChunk((pos, blocks) => saver.SaveVoxelChunk(pos, blocks));
+        // OnApplicationQuit 先于 OnDestroy 触发，入队任务由随后 saver.Dispose() 排空落盘。
+        // 存档 v2：主线程内先快照 tile（Saver.SnapshotTiles），随块数据一起入队
+        store.ForEachLoadedChunk((pos, blocks, tiles) => saver.SaveVoxelChunk(pos, blocks, Saver.SnapshotTiles(tiles)));
     }
 
     // ---- 公开 API（转发到专职类，签名保持不变，兼容既有调用方） ----
@@ -99,4 +112,9 @@ public class World : MonoBehaviour
 
     // 读取 chunk 块数据（未加载返回 null；BlockInteraction / mesh 快照用）
     public Block[,,] GetChunkBlocks(VCPosInWorld vcPos) => store.GetChunkBlocks(vcPos);
+
+    // 豌豆 tile 读写转发（仅主线程；种植/破坏/生长 tick 用）
+    public bool SetTile(BlockPosInWorld pos, PeaTileData tile) => store.SetTile(pos, tile);
+    public bool RemoveTile(BlockPosInWorld pos) => store.RemoveTile(pos);
+    public PeaTileData GetTile(BlockPosInWorld pos) => store.GetTile(pos);
 }

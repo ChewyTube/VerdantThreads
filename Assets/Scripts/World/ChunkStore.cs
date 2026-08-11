@@ -58,6 +58,14 @@ public class ChunkStore
             action(new(pos.x, pos.y, pos.z), vc.GetBlocksData());
     }
 
+    // 遍历所有已创建的 chunk（含 tile 字典，可能为 null；仅供主线程只读遍历；存档 v2 全量保存用）。
+    // 调用方须在主线程内对 tiles 做快照（Saver.SnapshotTiles），worker 只读快照数组。
+    public void ForEachLoadedChunk(Action<VCPosInWorld, Block[,,], Dictionary<ushort, PeaTileData>> action)
+    {
+        foreach (var (pos, vc) in world)
+            action(new(pos.x, pos.y, pos.z), vc.GetBlocksData(), vc.TilesRaw);
+    }
+
     // 跨 chunk 方块写入：目标未创建但为已标记的空区块时按需创建；目标不在视距盒内返回 false
     public bool SetBlock(Block block, BlockPosInWorld pos)
     {
@@ -82,6 +90,103 @@ public class ChunkStore
 
         targetChunk.SetBlock(block, bPos.X, bPos.Y, bPos.Z);
         return true;
+    }
+
+    // ---- tile 跨 chunk 路由（与 SetBlock 同构；仅主线程访问）----
+
+    // 跨 chunk tile 写入：目标未创建但为已标记的空区块时按需创建；目标不在视距盒内返回 false
+    public bool SetTile(BlockPosInWorld pos, PeaTileData tile)
+    {
+        VCPosInWorld vcPos = pos.GetCorrespondingVCPos();
+        BlockPosInVoxelChunk bPos = pos.GetCorrespondingPosInVC();
+
+        if (!world.TryGetValue(vcPos, out VoxelChunk targetChunk))
+        {
+            // 目标 chunk 未创建：若为已标记的空区块，则按需创建（与 SetBlock 一致，保证跨界种植落盘）
+            if (loadedVoxelChunks.Contains(vcPos))
+            {
+                CreateEmptyVoxelChunk(vcPos);
+                world.TryGetValue(vcPos, out targetChunk);
+            }
+
+            if (targetChunk == null)
+            {
+                // 目标不在视距盒内：返回 false，由调用方决定重试或丢弃
+                return false;
+            }
+        }
+
+        targetChunk.SetTile(TileKey(bPos), tile);
+        return true;
+    }
+
+    // 移除 tile：目标 chunk 不存在返回 false；存在则移除并返回 true
+    public bool RemoveTile(BlockPosInWorld pos)
+    {
+        VCPosInWorld vcPos = pos.GetCorrespondingVCPos();
+        if (!world.TryGetValue(vcPos, out VoxelChunk targetChunk))
+        {
+            return false;
+        }
+
+        targetChunk.RemoveTile(TileKey(pos.GetCorrespondingPosInVC()));
+        return true;
+    }
+
+    // 读取 tile：目标 chunk 不存在返回 null
+    public PeaTileData GetTile(BlockPosInWorld pos)
+    {
+        VCPosInWorld vcPos = pos.GetCorrespondingVCPos();
+        if (!world.TryGetValue(vcPos, out VoxelChunk targetChunk))
+        {
+            return null;
+        }
+
+        return targetChunk.GetTile(TileKey(pos.GetCorrespondingPosInVC()));
+    }
+
+    // 块内坐标 → 线性 tile key：(x<<8)|(y<<4)|z（与 CHUNK_SIZE_LOG2 一致，16 位 ushort 装得下）
+    private static ushort TileKey(BlockPosInVoxelChunk pos)
+        => (ushort)((pos.X << (Constants.CHUNK_SIZE_LOG2 * 2)) | (pos.Y << Constants.CHUNK_SIZE_LOG2) | pos.Z);
+
+    // 豌豆生长扫描：遍历所有已创建 chunk 的 tile，累加真实生长时间并推进阶段（仅主线程）。
+    // tile 的 GrowthTime 是唯一时间源，阶段只进不退；阶段推进走 SetBlock 置 changed，
+    // 由 VoxelChunk.Update 下一帧自动请求 mesh 重建，贴图随阶段切换。
+    public void TickPeaGrowth(float dt)
+    {
+        foreach (var (_, vc) in world)
+        {
+            // 直接读底层字典避免惰性创建空字典；无 tile 的 chunk 跳过
+            var tiles = vc.TilesRaw;
+            if (tiles == null || tiles.Count == 0) continue;
+
+            Block[,,] blocks = vc.GetBlocksData();
+            foreach (var kv in tiles)
+            {
+                PeaTileData tile = kv.Value;
+                tile.GrowthTime += dt;
+
+                // 目标阶段：由累计生长时间决定（最小苗→苗→开花→结果，阶段只进不退）
+                int newStage = tile.GrowthTime >= Constants.PEA_STAGE_3_SECONDS ? 3
+                    : tile.GrowthTime >= Constants.PEA_STAGE_2_SECONDS ? 2
+                    : tile.GrowthTime >= Constants.PEA_STAGE_1_SECONDS ? 1
+                    : 0;
+
+                // 当前阶段：从 chunk 块数组读（GetBlockState() 低 2 位状态位）
+                ushort key = kv.Key;
+                int x = key >> (Constants.CHUNK_SIZE_LOG2 * 2);
+                int y = (key >> Constants.CHUNK_SIZE_LOG2) & (Constants.CHUNK_SIZE - 1);
+                int z = key & (Constants.CHUNK_SIZE - 1);
+
+                int currentStage = (int)(blocks[x, y, z].GetBlockState() & BlockBits.StageMask);
+
+                // 阶段只进不退：目标 > 当前才更新方块状态位
+                if (newStage > currentStage)
+                {
+                    vc.SetBlock(blocks[x, y, z].WithStage((uint)newStage), x, y, z);
+                }
+            }
+        }
     }
 
     // 创建非空 chunk 对象；重复创建返回 false（不负责入队 mesh 构建，由调用方处理）
@@ -132,7 +237,8 @@ public class ChunkStore
             return;
         }
 
-        saver.SaveVoxelChunk(new(pos.x, pos.y, pos.z), vc.GetBlocksData());
+        // 存档 v2：主线程内先快照 tile（Saver.SnapshotTiles 纯复制，worker 只读快照数组），随块数据一起保存
+        saver.SaveVoxelChunk(new(pos.x, pos.y, pos.z), vc.GetBlocksData(), Saver.SnapshotTiles(vc.TilesRaw));
 
         ReturnChunkToPool(vc);
         world.Remove(pos);

@@ -83,10 +83,11 @@ public class MeshData
         normals.Add(normal);
     }
 
-    // 豌豆十字面片：两个交叉四边形（XZ 对角），高度随生长阶段；双面绘制，法线朝上
+    // 豌豆十字面片：两个交叉四边形（XZ 对角），固定满格高度；双面绘制，法线朝上。
+    // 贴图本身已按阶段绘制植物形态（最小苗/苗/开花/结果），不再用高度压缩表达阶段差异。
     public void AddPeaQuad(int x, int y, int z, int stage)
     {
-        float h = stage switch { 0 => 0.4f, 1 => 0.7f, _ => 1.0f };
+        float h = 1.0f;
         Vector2Int cell = PeaTextures.CellByStage[Mathf.Clamp(stage, 0, PeaTextures.CellByStage.Length - 1)];
         float u0 = 1f / totalSize * (sizePerTexture * cell.x + padding);
         float v0 = 1f / totalSize * (sizePerTexture * cell.y + padding);
@@ -101,7 +102,9 @@ public class MeshData
     }
 
     // 把 4 顶点 + UV 写成 2 三角形；双面共用顶点时法线二选一背面光照会错，
-    // 因此写 8 顶点双份：正面 4 个（法线朝上）+ 背面 4 个（法线朝下），两套 UV 相同
+    // 因此写 8 顶点双份：正面 4 个（法线朝上）+ 背面 4 个（三角反序，法线同样朝上）。
+    // 注意：背面绝不能用朝下法线——十字面片两片交叉时相机必站在其中一片的背面侧，
+    // 若背面法线朝下会导致「一片亮一片暗」的不对称光照。统一上法线即可光照均匀。
     private static void AddQuad(List<Vector3> vs, List<int> ts, List<Vector2> uvs, List<Vector3> ns,
         Vector3[] quad, Vector2[] uv)
     {
@@ -115,14 +118,13 @@ public class MeshData
         Vector3 n = new(0, 1, 0);
         ns.Add(n); ns.Add(n); ns.Add(n); ns.Add(n);
 
-        // 背面 4 顶点（法线朝下），两套 UV 相同，三角反序
+        // 背面 4 顶点（三角反序，法线同样朝上，保证两片交叉面片光照一致）
         int b0 = start + 4;
         vs.AddRange(quad);
         uvs.AddRange(uv);
         ts.Add(b0 + 0); ts.Add(b0 + 2); ts.Add(b0 + 1);
         ts.Add(b0 + 0); ts.Add(b0 + 3); ts.Add(b0 + 2);
-        Vector3 b = new(0, -1, 0);
-        ns.Add(b); ns.Add(b); ns.Add(b); ns.Add(b);
+        ns.Add(n); ns.Add(n); ns.Add(n); ns.Add(n);
     }
 
     private Vector3[] GetFaceVertices(int x, int y, int z, Direction dir)

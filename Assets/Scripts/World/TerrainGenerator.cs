@@ -34,10 +34,12 @@ public class TerrainGenerator
     public VoxelChunkData GenerateVoxelChunkData(VCPosInWorld pos, Block[,,] blocks)
     {
         // 读路径：#14 先查存档，命中则直接用已保存数据（含玩家修改），跳过重新生成
-        Block[,,] loaded = saver.TryLoadVoxelChunk(pos);
-        if (loaded != null)
+        // 存档 v2：同时读回 tile 快照（豌豆基因/世代/生长时间），随数据传给主线程回挂
+        if (saver.TryLoadVoxelChunk(pos, out var loaded, out var tiles))
         {
-            return new VoxelChunkData(loaded, pos, new List<(BlockPosInWorld, Block)>(), fillAir: false);
+            var loadedData = new VoxelChunkData(loaded, pos, new List<(BlockPosInWorld, Block)>(), fillAir: false);
+            loadedData.SetLoadedTiles(tiles);
+            return loadedData;
         }
 
         int CHUNK_SIZE = Constants.CHUNK_SIZE;

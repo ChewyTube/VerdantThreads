@@ -17,7 +17,18 @@ public struct SaveTask
     public Vector3Int RegionPos;
     public int LocalX, LocalY, LocalZ;
     public uint[,,] RawChunkData;
+    public TileSaveRecord[] Tiles; // 豌豆 tile 快照（纯值数组，worker 只读；null 视为无 tile）
     public int RetryCount; // 失败重试次数（重入队时递增）
+}
+
+// 豌豆 tile 存档记录（存档 v2）：纯值字段（ushort key + uint 基因 + int 世代 + float 生长时间），
+// 由主线程快照生成后交给 worker 只读，跨线程安全。
+public struct TileSaveRecord
+{
+    public ushort Key;       // 块内线性 key：(x<<8)|(y<<4)|z
+    public uint GenomeValue; // PeaTileData.Genome.Value
+    public int Generation;   // 世代（种植时 0）
+    public float GrowthTime; // 已生长秒数
 }
 
 public class Saver
@@ -72,6 +83,13 @@ public class Saver
 
     public void SaveVoxelChunk(VCPosInWorld vcPos, Block[,,] chunkData)
     {
+        SaveVoxelChunk(vcPos, chunkData, Array.Empty<TileSaveRecord>()); // 兼容入口：无 tile → 委托带 tile 重载（仍写 v2 载荷，tileCount=0）
+    }
+
+    // 带 tile 的保存（存档 v2）：主线程调用。tiles 须由调用方预先快照（Saver.SnapshotTiles，
+    // 快照须发生在主线程），本方法仅传递数组引用，worker 只读 TileSaveRecord[]（纯值，跨线程安全）。
+    public void SaveVoxelChunk(VCPosInWorld vcPos, Block[,,] chunkData, TileSaveRecord[] tiles)
+    {
         if (_completed) throw new InvalidOperationException("Saver 已释放，不能继续入队保存任务。");
 
         uint[,,] rawCopy = new uint[Constants.CHUNK_SIZE, Constants.CHUNK_SIZE, Constants.CHUNK_SIZE];
@@ -87,7 +105,8 @@ public class Saver
             LocalX = vcPos.X & (Constants.REGION_SIZE - 1),
             LocalY = vcPos.Y & (Constants.REGION_SIZE - 1),
             LocalZ = vcPos.Z & (Constants.REGION_SIZE - 1),
-            RawChunkData = rawCopy
+            RawChunkData = rawCopy,
+            Tiles = tiles ?? Array.Empty<TileSaveRecord>()
         });
     }
 
@@ -109,7 +128,7 @@ public class Saver
     {
         try
         {
-            byte[] compressed = ZlibChunkCompressor.Compress(task.RawChunkData, System.IO.Compression.CompressionLevel.Fastest);
+            byte[] compressed = ZlibChunkCompressor.Compress(task.RawChunkData, task.Tiles, System.IO.Compression.CompressionLevel.Fastest);
 
             lock (_writeLock)
             {
@@ -142,7 +161,7 @@ public class Saver
             {
                 try
                 {
-                    byte[] compressed = ZlibChunkCompressor.Compress(task.RawChunkData, System.IO.Compression.CompressionLevel.Fastest);
+                    byte[] compressed = ZlibChunkCompressor.Compress(task.RawChunkData, task.Tiles, System.IO.Compression.CompressionLevel.Fastest);
 
                     lock (_writeLock) // 与主线程同步兜底（SaveSync）互斥
                     {
@@ -201,15 +220,19 @@ public class Saver
         }
     }
 
-    // 读路径：从 .vrf region 文件加载单个 chunk。缺失/损坏/未保存 → 返回 null，由调用方重新生成。
+    // 读路径：从 .vrf region 文件加载单个 chunk（存档 v2：块数据 + tile 快照；v1 旧档自动兼容）。
+    // 缺失/损坏/未保存 → 返回 false 且 blocks/tiles = null，由调用方重新生成。
     // 后台线程可安全调用（独立打开文件流，与写路径的 _writers 互不干扰；FileShare.ReadWrite 允许并发）。
-    public Block[,,] TryLoadVoxelChunk(VCPosInWorld vcPos)
+    public bool TryLoadVoxelChunk(VCPosInWorld vcPos, out Block[,,] blocks, out TileSaveRecord[] tiles)
     {
+        blocks = null;
+        tiles = null;
+
         // 存档根目录未初始化（Initialize 前）→ 视为无存档
-        if (string.IsNullOrEmpty(_saveRoot)) return null;
+        if (string.IsNullOrEmpty(_saveRoot)) return false;
 
         string filePath = $"{_saveRoot}/{_path}/r.{vcPos.X >> Constants.REGION_SIZE_LOG2}.{vcPos.Y >> Constants.REGION_SIZE_LOG2}.{vcPos.Z >> Constants.REGION_SIZE_LOG2}.vrf";
-        if (!File.Exists(filePath)) return null; // 无该 region 文件：避免走异常路径（启动时每 chunk 查一次）
+        if (!File.Exists(filePath)) return false; // 无该 region 文件：避免走异常路径（启动时每 chunk 查一次）
 
         try
         {
@@ -217,14 +240,14 @@ public class Saver
 
             // 1. 校验版本头（magic "VRF1" + version=1）
             if (fs.Length < SimpleRegionWriter.FORMAT_MAGIC_SIZE + SimpleRegionWriter.INDEX_SIZE)
-                return null;
+                return false;
 
             Span<byte> magic = stackalloc byte[8];
             int read = fs.Read(magic);
             if (read < 8 ||
                 magic[0] != (byte)'V' || magic[1] != (byte)'R' || magic[2] != (byte)'F' || magic[3] != (byte)'1' ||
                 BinaryPrimitives.ReadInt32BigEndian(magic[4..]) != 1)
-                return null; // 旧格式或损坏 → 回退重新生成
+                return false; // 旧格式或损坏 → 回退重新生成
 
             // 2. 读索引区定位 chunk
             int localX = vcPos.X & (Constants.REGION_SIZE - 1);
@@ -234,36 +257,60 @@ public class Saver
 
             fs.Seek(SimpleRegionWriter.FORMAT_MAGIC_SIZE + headerOffset, SeekOrigin.Begin);
             Span<byte> entry = stackalloc byte[4];
-            if (fs.Read(entry) < 4) return null;
+            if (fs.Read(entry) < 4) return false;
 
             uint sectorOffset = ((uint)entry[0] << 16) | ((uint)entry[1] << 8) | entry[2];
             int sectorCount = entry[3];
-            if (sectorCount == 0) return null; // 该 chunk 从未保存
+            if (sectorCount == 0) return false; // 该 chunk 从未保存
 
             // 3. 读数据扇区：4B 压缩长度 + 压缩数据
             fs.Seek(SimpleRegionWriter.FORMAT_MAGIC_SIZE + SimpleRegionWriter.INDEX_SIZE + sectorOffset * Constants.SECTOR_SIZE, SeekOrigin.Begin);
             Span<byte> lenBuf = stackalloc byte[4];
-            if (fs.Read(lenBuf) < 4) return null;
+            if (fs.Read(lenBuf) < 4) return false;
             int compressedLen = BinaryPrimitives.ReadInt32BigEndian(lenBuf);
-            if (compressedLen <= 0 || compressedLen > sectorCount * Constants.SECTOR_SIZE - 4) return null; // 越界防护
+            if (compressedLen <= 0 || compressedLen > sectorCount * Constants.SECTOR_SIZE - 4) return false; // 越界防护
 
             byte[] compressed = new byte[compressedLen];
-            if (fs.Read(compressed, 0, compressedLen) < compressedLen) return null;
+            if (fs.Read(compressed, 0, compressedLen) < compressedLen) return false;
 
-            // 4. 解压 → uint[,,] → Block[,,]
-            uint[,,] raw = ZlibChunkCompressor.Decompress(compressed);
-            Block[,,] blocks = new Block[Constants.CHUNK_SIZE, Constants.CHUNK_SIZE, Constants.CHUNK_SIZE];
+            // 4. 解压 → 载荷自动判别（v1 纯块数据 / v2 带 tile 段）→ uint[,,] → Block[,,]
+            ZlibChunkCompressor.ChunkPayload payload = ZlibChunkCompressor.DecompressPayload(compressed);
+            Block[,,] blockArr = new Block[Constants.CHUNK_SIZE, Constants.CHUNK_SIZE, Constants.CHUNK_SIZE];
             for (int x = 0; x < Constants.CHUNK_SIZE; x++)
                 for (int y = 0; y < Constants.CHUNK_SIZE; y++)
                     for (int z = 0; z < Constants.CHUNK_SIZE; z++)
-                        blocks[x, y, z] = raw[x, y, z]; // uint → Block 隐式转换
+                        blockArr[x, y, z] = payload.Blocks[x, y, z]; // uint → Block 隐式转换
 
-            return blocks;
+            blocks = blockArr;
+            tiles = payload.Tiles;
+            return true;
         }
         catch (Exception)
         {
-            return null; // 文件缺失/IO 错误 → 回退重新生成（存档是优化，非正确性依赖）
+            return false; // 文件缺失/IO 错误 → 回退重新生成（存档是优化，非正确性依赖）
         }
+    }
+
+    // 主线程调用：把 chunk 的 tile 字典拍成纯值快照数组（worker 线程只读该数组，绝不碰 tile 字典）。
+    // tile 字典仅主线程访问，故快照须在主线程发生（调用方传入时即已完成）；本方法只做纯复制。
+    public static TileSaveRecord[] SnapshotTiles(Dictionary<ushort, PeaTileData> tiles)
+    {
+        if (tiles == null || tiles.Count == 0) return Array.Empty<TileSaveRecord>();
+
+        TileSaveRecord[] records = new TileSaveRecord[tiles.Count];
+        int i = 0;
+        foreach (var kv in tiles)
+        {
+            PeaTileData tile = kv.Value;
+            records[i++] = new TileSaveRecord
+            {
+                Key = kv.Key,
+                GenomeValue = tile.Genome.Value,
+                Generation = tile.Generation,
+                GrowthTime = tile.GrowthTime
+            };
+        }
+        return records;
     }
 
     public void Dispose()
@@ -419,6 +466,17 @@ public static class ZlibChunkCompressor
 {
     private const int RawDataSize = Constants.CHUNK_VOLUME * sizeof(uint);
 
+    // v2 载荷：解压后的字节布局（块数据段仍为 v1 的 native 端序线性布局）：
+    //   [0..1]    magic 'V' '2'
+    //   [2..5]    uint32 tileCount（大端）
+    //   [6..]     tileCount × 14 字节 TileRecord（全部大端）：
+    //               ushort key | uint genome | int generation | int growthTime（SingleToInt32Bits）
+    //   [..]      uint[CHUNK_VOLUME] 块数据（16384 字节）
+    private const int V2_HEADER_SIZE = 6;              // magic(2) + tileCount(4)
+    private const int TILE_RECORD_SIZE = 14;           // 2 + 4 + 4 + 4
+    private const int V2_MAGIC0 = (byte)'V';
+    private const int V2_MAGIC1 = (byte)'2';
+
     public static byte[] Compress(uint[,,] chunkData, System.IO.Compression.CompressionLevel level = System.IO.Compression.CompressionLevel.Fastest)
     {
         if (chunkData.Length != Constants.CHUNK_VOLUME)
@@ -448,6 +506,116 @@ public static class ZlibChunkCompressor
         return output.ToArray();
     }
 
+    // v2 压缩：始终产出 v2 载荷（0 tile 也写 magic + tileCount=0），全档统一 v2 格式
+    public static byte[] Compress(uint[,,] chunkData, TileSaveRecord[] tiles, System.IO.Compression.CompressionLevel level = System.IO.Compression.CompressionLevel.Fastest)
+    {
+        if (chunkData.Length != Constants.CHUNK_VOLUME)
+            throw new ArgumentException($"Expected uint[{Constants.CHUNK_SIZE},{Constants.CHUNK_SIZE},{Constants.CHUNK_SIZE}]");
+
+        if (tiles == null) tiles = Array.Empty<TileSaveRecord>();
+
+        // 1. 组装 v2 载荷：magic + tileCount + 记录（大端）+ 块数据（native 端序，与 v1 一致）
+        int payloadSize = V2_HEADER_SIZE + tiles.Length * TILE_RECORD_SIZE + RawDataSize;
+        byte[] payload = new byte[payloadSize];
+        payload[0] = (byte)V2_MAGIC0;
+        payload[1] = (byte)V2_MAGIC1;
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(2), tiles.Length);
+
+        int offset = V2_HEADER_SIZE;
+        foreach (var t in tiles)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(payload.AsSpan(offset), t.Key);
+            BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(offset + 2), t.GenomeValue);
+            BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(offset + 6), t.Generation);
+            BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(offset + 10), BitConverter.SingleToInt32Bits(t.GrowthTime));
+            offset += TILE_RECORD_SIZE;
+        }
+
+        // 块数据：与 v1 相同的线性索引布局
+        uint[] chunk = new uint[Constants.CHUNK_VOLUME];
+        static int Index(int x, int y, int z) => (x << (Constants.CHUNK_SIZE_LOG2 * 2)) | (y << Constants.CHUNK_SIZE_LOG2) | z;
+        for (int z = 0; z < Constants.CHUNK_SIZE; z++)
+            for (int y = 0; y < Constants.CHUNK_SIZE; y++)
+                for (int x = 0; x < Constants.CHUNK_SIZE; x++)
+                    chunk[Index(x, y, z)] = chunkData[x, y, z];
+
+        MemoryMarshal.AsBytes(chunk.AsSpan()).CopyTo(payload.AsSpan(offset));
+
+        // 2. deflate 压缩（raw deflate，与 v1 一致）
+        using var output = new MemoryStream(payloadSize / 2 + 64);
+        using (var deflate = new DeflateStream(output, level, leaveOpen: true))
+        {
+            deflate.Write(payload);
+        }
+
+        return output.ToArray();
+    }
+
+    // 解压载荷的解析结果：块数据 + tile 快照（v1 旧档 Tiles 为空数组）
+    public struct ChunkPayload
+    {
+        public uint[,,] Blocks;
+        public TileSaveRecord[] Tiles;
+    }
+
+    // 解压并自动判别 v1/v2 载荷：长度 == RawDataSize → v1 纯块数据（Tiles 空）；
+    // 长度 > RawDataSize 且 magic "V2" → v2（校验 长度 == 6 + 14*tileCount + RawDataSize）；
+    // 其余视为损坏抛 InvalidDataException。
+    public static ChunkPayload DecompressPayload(byte[] compressed)
+    {
+        byte[] raw;
+        using (var input = new MemoryStream(compressed))
+        using (var deflate = new DeflateStream(input, CompressionMode.Decompress))
+        using (var output = new MemoryStream())
+        {
+            deflate.CopyTo(output); // 解压全部字节（v2 载荷比 RawDataSize 长）
+            raw = output.ToArray();
+        }
+
+        // v1 旧档：解压后即纯块数据（16384 字节），无 tile 段
+        if (raw.Length == RawDataSize)
+        {
+            return new ChunkPayload
+            {
+                Blocks = ToBlocks(raw, 0, RawDataSize),
+                Tiles = Array.Empty<TileSaveRecord>()
+            };
+        }
+
+        // v2：magic 'V''2' + tileCount + tileCount×14B 记录 + 块数据
+        if (raw.Length > RawDataSize && raw[0] == V2_MAGIC0 && raw[1] == V2_MAGIC1)
+        {
+            int tileCount = BinaryPrimitives.ReadInt32BigEndian(raw.AsSpan(2));
+            if (tileCount < 0)
+                throw new InvalidDataException($"v2 tileCount 非法：{tileCount}");
+            int expected = V2_HEADER_SIZE + tileCount * TILE_RECORD_SIZE + RawDataSize;
+            if (raw.Length != expected)
+                throw new InvalidDataException($"v2 载荷长度不符：got {raw.Length}, expected {expected}");
+
+            TileSaveRecord[] tiles = new TileSaveRecord[tileCount];
+            int offset = V2_HEADER_SIZE;
+            for (int i = 0; i < tileCount; i++)
+            {
+                tiles[i] = new TileSaveRecord
+                {
+                    Key = BinaryPrimitives.ReadUInt16BigEndian(raw.AsSpan(offset)),
+                    GenomeValue = BinaryPrimitives.ReadUInt32BigEndian(raw.AsSpan(offset + 2)),
+                    Generation = BinaryPrimitives.ReadInt32BigEndian(raw.AsSpan(offset + 6)),
+                    GrowthTime = BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32BigEndian(raw.AsSpan(offset + 10)))
+                };
+                offset += TILE_RECORD_SIZE;
+            }
+
+            return new ChunkPayload
+            {
+                Blocks = ToBlocks(raw, offset, RawDataSize),
+                Tiles = tiles
+            };
+        }
+
+        throw new InvalidDataException($"未知存档载荷：解压后长度 {raw.Length}");
+    }
+
     // 解压：与 Compress 对称（raw deflate，非 zlib 封装）
     public static uint[,,] Decompress(byte[] compressed)
     {
@@ -474,6 +642,20 @@ public static class ZlibChunkCompressor
             result[i >> (Constants.CHUNK_SIZE_LOG2 * 2), (i >> Constants.CHUNK_SIZE_LOG2) & (Constants.CHUNK_SIZE - 1), i & (Constants.CHUNK_SIZE - 1)] = rawResult[i];
         }
 
+        return result;
+    }
+
+    // 从载荷字节段还原 uint[,,]（native 端序，与写路径 MemoryMarshal.AsBytes 对称）
+    private static uint[,,] ToBlocks(byte[] raw, int offset, int byteCount)
+    {
+        uint[] rawResult = new uint[byteCount / sizeof(uint)];
+        raw.AsSpan(offset, byteCount).CopyTo(MemoryMarshal.AsBytes(rawResult.AsSpan()));
+
+        uint[,,] result = new uint[Constants.CHUNK_SIZE, Constants.CHUNK_SIZE, Constants.CHUNK_SIZE];
+        for (int i = 0; i < Constants.CHUNK_VOLUME; i++)
+        {
+            result[i >> (Constants.CHUNK_SIZE_LOG2 * 2), (i >> Constants.CHUNK_SIZE_LOG2) & (Constants.CHUNK_SIZE - 1), i & (Constants.CHUNK_SIZE - 1)] = rawResult[i];
+        }
         return result;
     }
 }

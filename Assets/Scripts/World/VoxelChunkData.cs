@@ -9,6 +9,10 @@ public class VoxelChunkData
     VCPosInWorld pos;
     List<(BlockPosInWorld, Block)> pendingBlocks;
 
+    // 存档 v2 读回的 tile 快照（纯值数组）：后台生成线程构造，主线程消费，跨线程安全。
+    // 默认空数组，读路径（GenerateVoxelChunkData 命中存档）用 SetLoadedTiles 注入。
+    private TileSaveRecord[] loadedTiles = Array.Empty<TileSaveRecord>();
+
     public VoxelChunkData(Block[,,] blocks, VCPosInWorld pos, List<(BlockPosInWorld, Block)> pendingBlocks, bool fillAir = true)
     {
         this.blocks = blocks;
@@ -54,6 +58,18 @@ public class VoxelChunkData
     public Block[,,] GetBlocksData()
     {
         return blocks;
+    }
+
+    // 设置存档读回的 tile 快照（后台生成线程调用，主线程稍后消费；纯值数组跨线程安全）
+    public void SetLoadedTiles(TileSaveRecord[] tiles)
+    {
+        loadedTiles = tiles ?? Array.Empty<TileSaveRecord>();
+    }
+
+    // 读取 tile 快照（主线程消费：CreateChunk 成功后回挂到 chunk 的 tile 字典）
+    public TileSaveRecord[] GetLoadedTiles()
+    {
+        return loadedTiles;
     }
     public VCPosInWorld GetPos()
     {

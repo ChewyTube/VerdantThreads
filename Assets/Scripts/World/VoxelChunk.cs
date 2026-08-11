@@ -27,6 +27,24 @@ public class VoxelChunk : MonoBehaviour
 
     bool isEmpty = false;
 
+    // ---- tile 字典（豌豆生长数据）----
+    // tile 仅主线程访问；与 blocks 无强绑定，破坏/种植由 BlockInteraction 联动维护。
+    // 存档 v2 之前 tile 不单独序列化：chunk 卸载即丢失（预期行为）。
+    private Dictionary<ushort, PeaTileData> _tiles;
+
+    // 惰性初始化：首次访问时 new，避免空 chunk 白占字典
+    public Dictionary<ushort, PeaTileData> Tiles
+    {
+        get
+        {
+            if (_tiles == null) _tiles = new Dictionary<ushort, PeaTileData>();
+            return _tiles;
+        }
+    }
+
+    // 仅主线程只读访问底层字典（可能为 null）：供生长扫描等遍历场景，避免惰性创建空字典
+    public Dictionary<ushort, PeaTileData> TilesRaw => _tiles;
+
     // 注入的 mesh 重建请求回调（去单例化：由 ChunkStore 创建时赋值，World 组装时转发给 ChunkStreamer）
     public Action<VCPosInWorld> onMeshRebuildRequested;
 
@@ -138,6 +156,7 @@ public class VoxelChunk : MonoBehaviour
         initialized = true;
         changed = false;
         isEmpty = false;
+        _tiles = null; // 池化复用：清空上一世 tile（tile 仅主线程访问；存档 v2 之前卸载即丢失，预期行为）
 
         if (mesh != null) mesh.Clear(); // 清掉上一世残留 mesh，防止复用为空区块时渲染旧内容
     }
@@ -151,6 +170,7 @@ public class VoxelChunk : MonoBehaviour
         initialized = false;
         changed = false;
         isEmpty = false;
+        _tiles = null; // 归还池前释放 tile 字典，防止复用残留上一世 tile
         pos = default;
         onMeshRebuildRequested = null; // 断注入回调引用，复用时由 ChunkStore 重新赋值
     }
@@ -171,6 +191,30 @@ public class VoxelChunk : MonoBehaviour
 
         blocks[x, y, z] = block;
         changed = true;
+    }
+
+    // ---- tile 读写（仅主线程）----
+
+    // 写入 tile（惰性建字典）
+    public void SetTile(ushort key, PeaTileData tile)
+    {
+        if (_tiles == null) _tiles = new Dictionary<ushort, PeaTileData>();
+        _tiles[key] = tile;
+    }
+
+    // 移除 tile：存在才移除；移除后字典空则置 null 释放
+    public void RemoveTile(ushort key)
+    {
+        if (_tiles == null) return;
+        _tiles.Remove(key);
+        if (_tiles.Count == 0) _tiles = null;
+    }
+
+    // 读取 tile：无则返回 null
+    public PeaTileData GetTile(ushort key)
+    {
+        if (_tiles == null) return null;
+        return _tiles.TryGetValue(key, out var tile) ? tile : null;
     }
 
     public BlockType GetBlock(BlockPosInVoxelChunk pos)

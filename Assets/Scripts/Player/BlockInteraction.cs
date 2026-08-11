@@ -52,10 +52,18 @@ public class BlockInteraction : MonoBehaviour
     {
         if (!RaycastVoxel(out BlockPosInWorld hit, out _)) return;
 
+        // 破坏前记录方块类型：豌豆被破坏时联动移除 tile（生长数据随方块消失）
+        BlockType hitType = GetBlockTypeAt(hit);
+
         // 射线只命中非 Air 方块；世界最底层（Y=0）Bedrock 不可破坏，防止挖穿世界底
-        if (hit.Y == 0 && GetBlockTypeAt(hit) == BlockType.Bedrock) return;
+        if (hit.Y == 0 && hitType == BlockType.Bedrock) return;
 
         world.SetBlock(BlockRegistry.Air, hit);
+        // 破坏联动：豌豆方块被破坏 → 移除对应 tile（tile 与方块生命周期一致）
+        if (hitType == BlockType.PeaStem)
+        {
+            world.RemoveTile(hit);
+        }
         RequestMeshRebuildAround(hit);
     }
 
@@ -86,7 +94,15 @@ public class BlockInteraction : MonoBehaviour
         // 目标格已是固体 → 忽略
         if (IsSolid(placePos.X, placePos.Y, placePos.Z)) return;
 
-        world.SetBlock(BlockRegistry.GetBlock(current.ItemType), placePos);
+        // 放置成功（目标 chunk 存在/按需创建）才继续；PeaStem 放置时同步创建 tile（随机基因 + 世代 0）
+        if (world.SetBlock(BlockRegistry.GetBlock(current.ItemType), placePos))
+        {
+            // 种植联动：豌豆种子放置 → 创建 tile 记录基因/世代/生长进度（生长 tick 据此推进阶段）
+            if (current.ItemType == BlockType.PeaStem)
+            {
+                world.SetTile(placePos, new PeaTileData(Genome.Random(), 0));
+            }
+        }
         RequestMeshRebuildAround(placePos);
     }
 

@@ -129,6 +129,15 @@ public class ChunkStreamer
                     {
                         builtCount++;
                         EnqueueMeshBuild(pos);
+
+                        // 存档 v2：把读回的 tile 快照回挂到新创建的 chunk（纯值数组，主线程消费）
+                        var vc = store.GetChunk(pos);
+                        var loadedTiles = d.GetLoadedTiles();
+                        if (vc != null && loadedTiles.Length > 0)
+                        {
+                            foreach (var r in loadedTiles)
+                                vc.SetTile(r.Key, new PeaTileData(new Genome(r.GenomeValue), r.Generation) { GrowthTime = r.GrowthTime });
+                        }
                     }
                 }
             }

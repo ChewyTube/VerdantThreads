@@ -32,13 +32,13 @@
 | 步骤 | 内容 | 状态 |
 |------|------|------|
 | Step 0（前置） | 修复 `SimpleRegionWriter` 用 `FileMode.Create` 整文件重建隐患 → 改 `OpenOrCreate` + 读旧索引续写（含旧扇区复用防膨胀）；已实现并验证 ✅ | ✅ |
-| Step 1a | 废除 Block uint bit18-24 孟德尔预留位，改为 14 bit 通用渲染状态预留 | ⏳ |
-| Step 1b | `Genome` struct（7 位点 × 2 等位 × 2 bit 打包 uint32 + 访问器 / Crossover / Mutate） | ⏳ |
-| Step 1c | `VoxelChunk` 挂 `Dictionary<ushort, PeaTileData>` tile 字典（key = 块内线性索引 `(x<<8)\|(y<<4)\|z`）；`PrepareForPool` / `ResetForReuse` 必须清空 | ⏳ |
-| Step 1d | 种植豌豆创建 tile（默认/随机 genome + 世代 0）；破坏移除 tile；写入路由镜像 `store.SetBlock` 的跨 chunk 分发 | ⏳ |
-| Step 1e | 生长 tick（主线程挂 `World.Update`）：遍历豌豆 tile 按时间推进 stage → 写回 Block uint → changed → 网格重建；结荚可采收（网格路径零改动） | ⏳ |
-| Step 1f | 存档 v2：`SaveVoxelChunk` 带 tile 段；读路径 v1/v2 分支；v1 自动升级 | ⏳ |
-| Step 1g | 验证：种豌豆 → 存档 → 重启 → 阶段与基因保留 | ⏳ |
+| Step 1a | 废除 Block uint bit18-24 孟德尔预留位，改为 14 bit 通用渲染状态预留 | ✅（Block.cs 注释 + `WithStage`） |
+| Step 1b | `Genome` struct（7 位点 × 2 等位 × 2 bit 打包 uint32 + 访问器 / Crossover / Mutate）+ `PeaTrait` 性状表（与批2 2a/2b 合并做） | ✅（`Genetics/Genome.cs` + `Genetics/PeaTrait.cs`） |
+| Step 1c | `VoxelChunk` 挂 `Dictionary<ushort, PeaTileData>` tile 字典（key = 块内线性索引 `(x<<8)\|(y<<4)\|z`）；`PrepareForPool` / `ResetForReuse` 必须清空 | ✅ |
+| Step 1d | 种植豌豆创建 tile（默认/随机 genome + 世代 0）；破坏移除 tile；写入路由镜像 `store.SetBlock` 的跨 chunk 分发 | ✅ |
+| Step 1e | 生长 tick（主线程挂 `World.Update`）：遍历豌豆 tile 按时间推进 stage → 写回 Block uint → changed → 网格重建；结荚可采收（网格路径零改动） | ✅ |
+| Step 1f | 存档 v2：`SaveVoxelChunk` 带 tile 段；读路径 v1/v2 分支；v1 自动升级 | ✅（载荷自描述，VRF1 文件头不动，v1 零迁移兼容） |
+| Step 1g | 验证：种豌豆 → 存档 → 重启 → 阶段与基因保留 | ⏳（需进编辑器 Play Mode，合并验证 1a-1f） |
 | Step 2 | 遗传/育种：采收种子携带双亲基因 → 种植 Crossover；突变；世代参与表型（全在 tile 内，不动 Block/网格/存档格式） | ⏳ |
 | Step 3 | 碱基序列：启用 tile 变长 payload；碱基序列 `byte[]` + 序列级突变；genome 作为投影重算 | ⏳ |
 | Step 2+ 泛化 | 等第 2 个复杂方块出现再做：tileType 标签 + 注册表分派 | ⏳ |
