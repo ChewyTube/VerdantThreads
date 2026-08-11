@@ -20,4 +20,7 @@ public static class Constants
     public const float PEA_STAGE_1_SECONDS = 20f;       // 最小苗→苗所需生长时间（秒，可调）
     public const float PEA_STAGE_2_SECONDS = 40f;       // 苗→开花所需生长时间（秒，可调）
     public const float PEA_STAGE_3_SECONDS = 60f;       // 开花→结果所需生长时间（秒，可调）
+
+    // ---- 地物系统 ----
+    public const int PEA_FEATURE_DENSITY = 64;          // 豌豆自然生成密度（哈希取模分母，越小越密；约 1/64 列一棵）
 }

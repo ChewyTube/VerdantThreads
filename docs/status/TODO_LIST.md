@@ -14,6 +14,7 @@
 - [x] 更新 `AGENTS.md` 并归档旧版（`docs/archive/AGENTS_OLD.md`）
 - [x] **Step 0** 存档续写修复：`SimpleRegionWriter` 改 `OpenOrCreate` + 读旧索引续写（含旧扇区复用防膨胀）
 - [x] **物品栏与背包系统**（阶段二，`docs/design/INVENTORY_SYSTEM.md`）：`ItemInstance` + `Backpack`（选择状态唯一权威）+ `HotbarWindow`（9 槽/图集图标/左上角 1-9/选中高亮）+ `BackpackWindow`（E 键/点击选中）；`BlockInteraction` 放置改读 Backpack
+- [x] **地物系统（Feature）**（`docs/design/FEATURE_SYSTEM.md`）：生成期地物抽象（`Feature` 基类 + `TerrainGenerator` 锚点装配）；树从 `TerrainGenerator` 内嵌代码 1:1 搬入 `TreeFeature`（外观不变）；新增 `PeaFeature` 豌豆自然生成（密度哈希 + 确定性基因 + `AddPendingTile` 通道，主线程 CreateChunk 后与存档读回统一回挂）
 
 ## 基因系统路线图（架构评审 @oracle 已定案）⏳
 
