@@ -10,6 +10,12 @@ public struct MeshBuildData
     public long Seq;     // 构建代次（World 在主线程分配，单调递增）
     public long ChunkId; // 所属 chunk 实例 ID
 
+    // 豌豆 tile 基因快照（主线程拷贝，后台只读；阶段 3 开花植株按基因选花贴图）。
+    // 键 = TileKey：(x<<8)|(y<<4)|z。null = 无 tile（本 chunk 无豌豆）
+    public Dictionary<ushort, Genome> TileGenomes;
+    // Y-1 邻居 chunk 的 tile 基因快照（PeaPlantTop 在 y=0 时跨 chunk 查下方 PeaStem 的基因）；null = 邻居无 tile
+    public Dictionary<ushort, Genome> TileGenomesBelow;
+
     // 6 个方向邻居的 16×16 边界面（BlockType）；null = 邻居未加载/不存在（保留面）
     public BlockType[,] BorderNorth; // +Z 邻居 z=0 平面 [x,y]
     public BlockType[,] BorderSouth; // -Z 邻居 z=15 平面 [x,y]
@@ -22,15 +28,22 @@ public struct MeshBuildData
 // 在后台线程执行的纯计算：从块快照生成 MeshData
 public static class ChunkMeshBuilder
 {
-    // 主线程调用：构建快照（getNeighborBlocks 由 World 提供，返回邻居 chunk 的 Block[,,] 或 null）
-    public static MeshBuildData CreateSnapshot(VCPosInWorld pos, Block[,,] blocks, Func<VCPosInWorld, Block[,,]> getNeighborBlocks)
+    // 主线程调用：构建快照（getNeighborBlocks 由 World 提供，返回邻居 chunk 的 Block[,,] 或 null；
+    // tiles 为本 chunk 的 tile 字典（可 null），getNeighborTiles 取邻居 chunk 的 tile 字典）
+    public static MeshBuildData CreateSnapshot(VCPosInWorld pos, Block[,,] blocks,
+        Func<VCPosInWorld, Block[,,]> getNeighborBlocks,
+        Dictionary<ushort, PeaTileData> tiles,
+        Func<VCPosInWorld, Dictionary<ushort, PeaTileData>> getNeighborTiles)
     {
         int s = Constants.CHUNK_SIZE;
 
         MeshBuildData d = new MeshBuildData
         {
             Pos = pos,
-            Blocks = new Block[s, s, s]
+            Blocks = new Block[s, s, s],
+            // 基因快照：只拷值（Genome struct），不拷 PeaTileData 引用；后台线程只读副本，线程安全
+            TileGenomes = SnapshotGenomes(tiles),
+            TileGenomesBelow = SnapshotGenomes(getNeighborTiles(new VCPosInWorld(pos.X, pos.Y - 1, pos.Z))),
         };
         for (int x = 0; x < s; x++)
             for (int y = 0; y < s; y++)
@@ -48,11 +61,21 @@ public static class ChunkMeshBuilder
         return d;
     }
 
+    // tile 字典 → 基因值字典（主线程拷贝，后台只读；空/空字典返回 null）
+    private static Dictionary<ushort, Genome> SnapshotGenomes(Dictionary<ushort, PeaTileData> tiles)
+    {
+        if (tiles == null || tiles.Count == 0) return null;
+        var snapshot = new Dictionary<ushort, Genome>(tiles.Count);
+        foreach (var kv in tiles)
+            snapshot[kv.Key] = kv.Value.Genome;
+        return snapshot;
+    }
+
     // axis: 0=X 1=Y 2=Z；fixedIndex: 该轴上取哪一面的局部坐标。平面索引规则：
     // Z 轴固定 → [x,y]；X 轴固定 → [z,y]；Y 轴固定 → [x,z]
     private static BlockType[,] CopyPlane(Block[,,] nb, int axis, int fixedIndex)
     {
-        if (nb == null) return null;
+        if (nb == null) return null; // 邻居未加载/不存在 → null → 保留面
         int s = Constants.CHUNK_SIZE;
         BlockType[,] plane = new BlockType[s, s];
         for (int a = 0; a < s; a++)
@@ -83,18 +106,32 @@ public static class ChunkMeshBuilder
                     {
                         int stage = (int)(d.Blocks[x, y, z].GetBlockState() & BlockBits.StageMask);
                         int xw = x + d.Pos.X * s, yw = y + d.Pos.Y * s, zw = z + d.Pos.Z * s;
-                        // 阶段 0/1：单格十字用阶段贴图；阶段 2/3：两格高植株底部格贴图（顶部格由 PeaPlantTop 画）
-                        if (stage >= 2)
+                        // 阶段 0/1：单格十字用阶段贴图；阶段 2：两格高无花植株；阶段 3：开花，按基因选 4 种花贴图之一
+                        if (stage >= 3)
+                        {
+                            // 底部格基因查本 chunk tile（tile 挂在 PeaStem 上）；缺失则回退无花贴图（防御，正常必有）
+                            ushort key = (ushort)((x << 8) | (y << 4) | z);
+                            Vector2Int cell = PeaTextures.PlantBottomCell;
+                            if (d.TileGenomes != null && d.TileGenomes.TryGetValue(key, out var genome))
+                                PeaTextures.GetFlowerCells(genome, out cell, out _);
+                            meshData.AddPeaQuadCell(xw, yw, zw, cell);
+                        }
+                        else if (stage == 2)
                             meshData.AddPeaQuadCell(xw, yw, zw, PeaTextures.PlantBottomCell);
                         else
                             meshData.AddPeaQuad(xw, yw, zw, stage);
                         continue;
                     }
-                    // 豌豆两格高植株顶部格：独立方块类型，固定顶部贴图
+                    // 豌豆两格高植株顶部格：独立方块类型；阶段 3 花贴图随下方 PeaStem 基因（同株同基因，跨 chunk 由 TileGenomesBelow 兜底）
                     if (bt == BlockType.PeaPlantTop)
                     {
                         int xw = x + d.Pos.X * s, yw = y + d.Pos.Y * s, zw = z + d.Pos.Z * s;
-                        meshData.AddPeaQuadCell(xw, yw, zw, PeaTextures.PlantTopCell);
+                        Vector2Int cell = PeaTextures.PlantTopCell;
+                        Dictionary<ushort, Genome> genes = y > 0 ? d.TileGenomes : d.TileGenomesBelow;
+                        ushort key = (ushort)((x << 8) | ((y > 0 ? y - 1 : Constants.CHUNK_SIZE - 1) << 4) | z);
+                        if (genes != null && genes.TryGetValue(key, out var genome))
+                            PeaTextures.GetFlowerCells(genome, out _, out cell);
+                        meshData.AddPeaQuadCell(xw, yw, zw, cell);
                         continue;
                     }
                     if (bt != BlockType.Air && bt != BlockType.Void)

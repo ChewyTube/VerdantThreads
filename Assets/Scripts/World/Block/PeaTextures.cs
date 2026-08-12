@@ -22,6 +22,19 @@ public static class PeaTextures
     public static readonly Vector2Int PlantBottomCell = new(2, 5); // pos_PeaPlantShort_bottom
     public static readonly Vector2Int PlantTopCell = new(2, 4);    // pos_PeaPlantShort_top
 
+    // 阶段 3（开花结果）花贴图：花色（紫/白）× 花位置（腋生/顶生）4 种表型，每株 bottom/top 两张。
+    // 图集布局（main.py，整列 3）：row = (花位?0:4) + (花色?0:2)，bottom=row、top=row+1：
+    //   腋生紫 (3,0)/(3,1)  腋生白 (3,2)/(3,3)  顶生紫 (3,4)/(3,5)  顶生白 (3,6)/(3,7)
+    // 表型判定与 PeaTraits/Genome 一致：位点2 花色 显性=紫、位点5 花位置 显性=腋生
+    public static void GetFlowerCells(Genome genome, out Vector2Int bottomCell, out Vector2Int topCell)
+    {
+        bool purple = genome.IsDominant(2);   // 花色：显性 → 紫
+        bool axillary = genome.IsDominant(5); // 花位置：显性 → 腋生
+        int row = (axillary ? 0 : 4) + (purple ? 0 : 2);
+        bottomCell = new Vector2Int(3, row);
+        topCell = new Vector2Int(3, row + 1);
+    }
+
     // 占位绘制已停用：阶段 2/3 改用用户绘制的 (2,4)/(2,5) 两格贴图，(2,1)/(2,0) 运行时占位退役。
     // 函数体保留为空（InstallToMaterial 调用点与 WorldManager 不变），绝不写任何像素，特别是 (2,4)/(2,5)。
     public static void PaintAtlasPlaceholders(Texture2D atlas)

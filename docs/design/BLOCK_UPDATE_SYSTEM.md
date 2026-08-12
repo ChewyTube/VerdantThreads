@@ -42,7 +42,7 @@ MC 的三类更新（Random Tick / Block Update / Scheduled Tick）本作按需�
 
 ```csharp
 // BlockUpdateCenter 静态分派，按 BlockType switch：
-//   PeaStem      → 随机刻推进（含阶段 1→2 补顶）/ 邻居变化（顶部消失→退阶段 0）
+//   PeaStem      → 随机刻推进（含阶段 1→2 补顶）/ 自身被破坏（阶段≥2）→ 清顶部格 / 邻居变化或放置时下方为 Air → 掉落（植株消失）
 //   PeaPlantTop  → 随机刻无操作 / 自身被破坏→下方退阶段 0
 // 未来方块：switch 加分支
 ```
@@ -92,3 +92,4 @@ MC 的三类更新（Random Tick / Block Update / Scheduled Tick）本作按需�
 1. Step A 后：豌豆生长节奏与之前一致（单阶段 ≈ 205s）
 2. Step B 后：破坏顶 → 底退阶段 0（tile 保留可再长）；破坏底 → 顶清除；跨 chunk（y=15/16）同验
 3. Step C 后：`ScheduleTick` 到期触发（调试日志验证）；卸载 chunk 后计划刻丢弃不报错
+4. 支撑检查：挖掉豌豆下方方块 → 豌豆（含阶段≥2 的顶部格）掉落消失；挖掉豌豆旁/上方方块 → 豌豆不动；空中放置豌豆 → 立即掉落

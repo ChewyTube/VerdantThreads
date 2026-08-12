@@ -388,7 +388,10 @@ public class ChunkStreamer
         VoxelChunk vc = store.GetChunk(vcPos);
         if (vc == null) return;
 
-        MeshBuildData snapshot = ChunkMeshBuilder.CreateSnapshot(vcPos, vc.GetBlocksData(), store.GetChunkBlocks);
+        // 快照含豌豆 tile 基因（阶段 3 花贴图按基因选）；Y-1 邻居 tile 供顶部格跨 chunk 查基因
+        MeshBuildData snapshot = ChunkMeshBuilder.CreateSnapshot(
+            vcPos, vc.GetBlocksData(), store.GetChunkBlocks,
+            vc.TilesRaw, pos => store.GetChunk(pos)?.TilesRaw);
         snapshot.Seq = vc.TakeBuildSeq();
         snapshot.ChunkId = vc.InstanceId;
 

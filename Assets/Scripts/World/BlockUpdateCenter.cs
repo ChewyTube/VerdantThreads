@@ -205,16 +205,18 @@ public class BlockUpdateCenter
         _updateDepth++;
         try
         {
-            BlockUpdateSource source = DetermineSource(oldBlock, newBlock);
+        BlockUpdateSource source = DetermineSource(oldBlock, newBlock);
 
-            DispatchBlockUpdate(pos, oldBlock, source); // 本位置：用旧块分派
+        DispatchBlockUpdate(pos, oldBlock, source); // 本位置：用旧块分派（它是刚被替换的块，状态可判定联动）
 
-            DispatchNeighbor(new BlockPosInWorld(pos.X + 1, pos.Y, pos.Z), source);
-            DispatchNeighbor(new BlockPosInWorld(pos.X - 1, pos.Y, pos.Z), source);
-            DispatchNeighbor(new BlockPosInWorld(pos.X, pos.Y + 1, pos.Z), source);
-            DispatchNeighbor(new BlockPosInWorld(pos.X, pos.Y - 1, pos.Z), source);
-            DispatchNeighbor(new BlockPosInWorld(pos.X, pos.Y, pos.Z + 1), source);
-            DispatchNeighbor(new BlockPosInWorld(pos.X, pos.Y, pos.Z - 1), source);
+        // 6 邻居：一律按 NeighborChanged 分派（邻居变化 ≠ 邻居自身被破坏/放置；
+        // 若复用 source，破坏豌豆 A 会连带触发相邻豌豆 B 的 Break 联动 → 误清 B 顶部格）
+        DispatchNeighbor(new BlockPosInWorld(pos.X + 1, pos.Y, pos.Z), BlockUpdateSource.NeighborChanged);
+        DispatchNeighbor(new BlockPosInWorld(pos.X - 1, pos.Y, pos.Z), BlockUpdateSource.NeighborChanged);
+        DispatchNeighbor(new BlockPosInWorld(pos.X, pos.Y + 1, pos.Z), BlockUpdateSource.NeighborChanged);
+        DispatchNeighbor(new BlockPosInWorld(pos.X, pos.Y - 1, pos.Z), BlockUpdateSource.NeighborChanged);
+        DispatchNeighbor(new BlockPosInWorld(pos.X, pos.Y, pos.Z + 1), BlockUpdateSource.NeighborChanged);
+        DispatchNeighbor(new BlockPosInWorld(pos.X, pos.Y, pos.Z - 1), BlockUpdateSource.NeighborChanged);
         }
         finally
         {
@@ -246,6 +248,14 @@ public class BlockUpdateCenter
                         store.SetBlock(BlockRegistry.Air, new BlockPosInWorld(pos.X, pos.Y + 1, pos.Z));
                     }
                 }
+                // 支撑检查：邻居方块变化（下方支撑被挖掉）或刚放置于无支撑位置 → 植株掉落
+                // （无掉落物实体系统：植株直接消失，tile 一并清理；阶段≥2 的顶部格经上方 Break 联动清除）
+                else if ((source == BlockUpdateSource.NeighborChanged || source == BlockUpdateSource.Place) &&
+                         TryReadBlock(new BlockPosInWorld(pos.X, pos.Y - 1, pos.Z), out Block below) &&
+                         below.GetBlockType() == BlockType.Air)
+                {
+                    DropPeaPlant(pos);
+                }
                 break;
             }
             case BlockType.PeaPlantTop:
@@ -265,6 +275,14 @@ public class BlockUpdateCenter
             default:
                 break;
         }
+    }
+
+    // 豌豆掉落：植株失去支撑 → 移除方块 + tile（无掉落物实体系统，植株直接消失）。
+    // 置 Air 触发 Break 通知 → 上方 PeaPlantTop 经联动清除（阶段≥2 时）；递归深度由上限兜底。
+    private void DropPeaPlant(BlockPosInWorld pos)
+    {
+        store.RemoveTile(pos); // tile 与方块生命周期一致，随植株移除
+        store.SetBlock(BlockRegistry.Air, pos);
     }
 
     // 事件源判别：Air→非 Air = Place；非 Air→Air = Break；其余 = StateChange
