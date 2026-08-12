@@ -26,17 +26,10 @@ public static class PeaTextures
     // 图集布局（main.py，整列 4）：row = (花位?0:4) + (荚色?0:2)，bottom=row、top=row+1：
     //   腋绿 (4,0)/(4,1)  腋黄 (4,2)/(4,3)  顶绿 (4,4)/(4,5)  顶黄 (4,6)/(4,7)
     // 表型判定与 PeaTraits/Genome 一致：位点4 豆荚色 显性=绿、位点5 花位置 显性=腋生
-    // 黄荚贴图尚未绘制：隐性黄表型回退到无荚植株贴图（PlantBottomCell/PlantTopCell），避免隐形
     public static void GetFlowerCells(Genome genome, out Vector2Int bottomCell, out Vector2Int topCell)
     {
         bool green = genome.IsDominant(4);    // 豆荚色：显性 → 绿
         bool axillary = genome.IsDominant(5); // 花位置：显性 → 腋生
-        if (!green)
-        {
-            bottomCell = PlantBottomCell; // 黄荚贴图未绘制，回退到无荚植株
-            topCell = PlantTopCell;
-            return;
-        }
         int row = (axillary ? 0 : 4) + (green ? 0 : 2);
         bottomCell = new Vector2Int(4, row);
         topCell = new Vector2Int(4, row + 1);
