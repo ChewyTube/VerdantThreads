@@ -42,7 +42,7 @@ public class World : MonoBehaviour
         blockUpdateCenter = new BlockUpdateCenter(store);
         store.OnBlockWritten += blockUpdateCenter.OnBlockWritten;
         store.OnChunkUnloaded += blockUpdateCenter.OnChunkUnloaded;
-        streamer = new ChunkStreamer(terrainGen, store, lineOfSight, verticalLineOfSight);
+        streamer = new ChunkStreamer(terrainGen, store, lineOfSight, verticalLineOfSight, seed);
 
         DontDestroyOnLoad(gameObject);
 
@@ -75,14 +75,18 @@ public class World : MonoBehaviour
         streamer.Tick(camPosInt.GetCorrespondingVCPos());
 
         // 方块更新中心：20 tick/秒（PEA_GROWTH_TICK_INTERVAL=1/20s）。deltaTime 累加，while 补 tick
-        // （低帧率一帧跨多个 tick 也全部补上，与 MC 固定 tick 节奏一致）；每补一个 tick 执行一次
-        // OnGameTick（先到期计划刻，后随机刻）
+        // （低帧率一帧跨多个 tick 也全部补上，与 MC 固定 tick 节奏一致；超过单帧上限 MAX_GAME_TICKS_PER_FRAME
+        // 的积压直接丢弃，防止"卡顿→追赶更多 tick→更卡"的正反馈）
         _growthTickAccumulator += Time.deltaTime;
-        while (_growthTickAccumulator >= Constants.PEA_GROWTH_TICK_INTERVAL)
+        int ticksRun = 0;
+        while (_growthTickAccumulator >= Constants.PEA_GROWTH_TICK_INTERVAL && ticksRun < Constants.MAX_GAME_TICKS_PER_FRAME)
         {
             _growthTickAccumulator -= Constants.PEA_GROWTH_TICK_INTERVAL;
             blockUpdateCenter.OnGameTick();
+            ticksRun++;
         }
+        if (_growthTickAccumulator >= Constants.PEA_GROWTH_TICK_INTERVAL)
+            _growthTickAccumulator = 0f; // 超过单帧上限：丢弃剩余积压
     }
 
     void OnDestroy()

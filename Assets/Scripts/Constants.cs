@@ -23,6 +23,7 @@ public static class Constants
 
     // ---- 方块更新机制 ----
     public const int MAX_BLOCK_UPDATE_DEPTH = 256;      // 方块更新递归通知深度上限（防环：破坏联动等递归写入链）
+    public const int MAX_GAME_TICKS_PER_FRAME = 5;     // 单帧游戏 tick 追赶上限（=250ms；超限丢弃积压，防止长帧连锁放大卡顿）
 
     // ---- 地物系统 ----
     public const int PEA_CLUMP_DENSITY = 256;           // 豌豆丛中心频率（哈希取模分母，越小越密；约 1/256 列一丛，每丛 14-18 株）

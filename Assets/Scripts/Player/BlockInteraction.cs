@@ -103,7 +103,7 @@ public class BlockInteraction : MonoBehaviour
             // 种植联动：豌豆种子放置 → 创建 tile 记录基因/世代/生长进度（生长 tick 据此推进阶段）
             if (current.ItemType == BlockType.PeaStem)
             {
-                world.SetTile(placePos, new PeaTileData(Genome.Random(), 0));
+                world.SetTile(placePos, new PeaTileData(current.Genome ?? Genome.Random(), 0));
             }
         }
         RequestMeshRebuildAround(placePos);

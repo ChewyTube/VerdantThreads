@@ -9,6 +9,7 @@ public struct MeshBuildData
     public Block[,,] Blocks;   // 本地块快照
     public long Seq;     // 构建代次（World 在主线程分配，单调递增）
     public long ChunkId; // 所属 chunk 实例 ID
+    public int Seed;     // 世界种子（贴图随机旋转哈希用；后台线程不能访问 World 实例，必须随快照传递）
 
     // 豌豆 tile 基因快照（主线程拷贝，后台只读；阶段 3 开花植株按基因选花贴图）。
     // 键 = TileKey：(x<<8)|(y<<4)|z。null = 无 tile（本 chunk 无豌豆）
@@ -33,7 +34,8 @@ public static class ChunkMeshBuilder
     public static MeshBuildData CreateSnapshot(VCPosInWorld pos, Block[,,] blocks,
         Func<VCPosInWorld, Block[,,]> getNeighborBlocks,
         Dictionary<ushort, PeaTileData> tiles,
-        Func<VCPosInWorld, Dictionary<ushort, PeaTileData>> getNeighborTiles)
+        Func<VCPosInWorld, Dictionary<ushort, PeaTileData>> getNeighborTiles,
+        int seed)
     {
         int s = Constants.CHUNK_SIZE;
 
@@ -41,6 +43,7 @@ public static class ChunkMeshBuilder
         {
             Pos = pos,
             Blocks = new Block[s, s, s],
+            Seed = seed,
             // 基因快照：只拷值（Genome struct），不拷 PeaTileData 引用；后台线程只读副本，线程安全
             TileGenomes = SnapshotGenomes(tiles),
             TileGenomesBelow = SnapshotGenomes(getNeighborTiles(new VCPosInWorld(pos.X, pos.Y - 1, pos.Z))),
@@ -106,7 +109,10 @@ public static class ChunkMeshBuilder
                     {
                         int stage = (int)(d.Blocks[x, y, z].GetBlockState() & BlockBits.StageMask);
                         int xw = x + d.Pos.X * s, yw = y + d.Pos.Y * s, zw = z + d.Pos.Z * s;
-                        // 阶段 0/1：单格十字用阶段贴图；阶段 2：两格高无花植株；阶段 3：开花，按基因选 4 种花贴图之一
+                        // 豌豆旋转（十字面片几何绕 Y 旋转，贴图随几何转；不对称贴图 → 可见朝向，见 TEXTURE_ROTATION.md 2.1）；
+                        // 顶部格用同一 hash（yw-1）保证同株同朝向
+                        int rot = TextureRotation.GetRotation(d.Seed, xw, yw, zw);
+                        // 阶段 0/1：单格用阶段贴图；阶段 2：两格高无花植株；阶段 3：开花，按基因选 4 种花贴图之一
                         if (stage >= 3)
                         {
                             // 底部格基因查本 chunk tile（tile 挂在 PeaStem 上）；缺失则回退无花贴图（防御，正常必有）
@@ -114,24 +120,26 @@ public static class ChunkMeshBuilder
                             Vector2Int cell = PeaTextures.PlantBottomCell;
                             if (d.TileGenomes != null && d.TileGenomes.TryGetValue(key, out var genome))
                                 PeaTextures.GetFlowerCells(genome, out cell, out _);
-                            meshData.AddPeaQuadCell(xw, yw, zw, cell);
+                            meshData.AddPeaQuadCell(xw, yw, zw, cell, rot);
                         }
                         else if (stage == 2)
-                            meshData.AddPeaQuadCell(xw, yw, zw, PeaTextures.PlantBottomCell);
+                            meshData.AddPeaQuadCell(xw, yw, zw, PeaTextures.PlantBottomCell, rot);
                         else
-                            meshData.AddPeaQuad(xw, yw, zw, stage);
+                            meshData.AddPeaQuad(xw, yw, zw, stage, rot);
                         continue;
                     }
                     // 豌豆两格高植株顶部格：独立方块类型；阶段 3 花贴图随下方 PeaStem 基因（同株同基因，跨 chunk 由 TileGenomesBelow 兜底）
                     if (bt == BlockType.PeaPlantTop)
                     {
                         int xw = x + d.Pos.X * s, yw = y + d.Pos.Y * s, zw = z + d.Pos.Z * s;
+                        // 与底部格同 hash（yw-1）→ 同株同朝向
+                        int rot = TextureRotation.GetRotation(d.Seed, xw, yw - 1, zw);
                         Vector2Int cell = PeaTextures.PlantTopCell;
                         Dictionary<ushort, Genome> genes = y > 0 ? d.TileGenomes : d.TileGenomesBelow;
                         ushort key = (ushort)((x << 8) | ((y > 0 ? y - 1 : Constants.CHUNK_SIZE - 1) << 4) | z);
                         if (genes != null && genes.TryGetValue(key, out var genome))
                             PeaTextures.GetFlowerCells(genome, out _, out cell);
-                        meshData.AddPeaQuadCell(xw, yw, zw, cell);
+                        meshData.AddPeaQuadCell(xw, yw, zw, cell, rot);
                         continue;
                     }
                     if (bt != BlockType.Air && bt != BlockType.Void)
@@ -155,7 +163,10 @@ public static class ChunkMeshBuilder
         int xw = x + d.Pos.X * s;
         int yw = y + d.Pos.Y * s;
         int zw = z + d.Pos.Z * s;
-        meshData.AddFace(xw, yw, zw, dir, d.Blocks[x, y, z]);
+        // 贴图随机旋转：白名单内的方块/面才转（默认仅草方块顶面），其余 rotation=0 不转（各向同性纹理无视觉差异）
+        var bt = d.Blocks[x, y, z].GetBlockType();
+        int rot = TextureRotation.ShouldRotateFace(bt, dir) ? TextureRotation.GetRotation(d.Seed, xw, yw, zw) : 0;
+        meshData.AddFace(xw, yw, zw, dir, d.Blocks[x, y, z], rot);
     }
 
     // 面剔除（与原 VoxelChunk.ShouldBeEliminated 逻辑一致，改为读快照）

@@ -208,6 +208,9 @@ public class BlockUpdateCenter
         BlockUpdateSource source = DetermineSource(oldBlock, newBlock);
 
         DispatchBlockUpdate(pos, oldBlock, source); // 本位置：用旧块分派（它是刚被替换的块，状态可判定联动）
+        // Place：再用新块分派一次本位置（空中种植豌豆时 oldBlock 是 Air，用新块才能命中豌豆的支撑检查分支）
+        if (source == BlockUpdateSource.Place)
+            DispatchBlockUpdate(pos, newBlock, source);
 
         // 6 邻居：一律按 NeighborChanged 分派（邻居变化 ≠ 邻居自身被破坏/放置；
         // 若复用 source，破坏豌豆 A 会连带触发相邻豌豆 B 的 Break 联动 → 误清 B 顶部格）

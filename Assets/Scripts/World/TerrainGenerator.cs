@@ -47,7 +47,9 @@ public class TerrainGenerator
         // 存档 v2：同时读回 tile 快照（豌豆基因/世代/生长时间），随数据传给主线程回挂
         if (saver.TryLoadVoxelChunk(pos, out var loaded, out var tiles))
         {
-            var loadedData = new VoxelChunkData(loaded, pos, new List<(BlockPosInWorld, Block)>(), fillAir: false);
+            // 读回数据拷入池化数组再使用：避免池化数组泄漏（保存命中路径不再 new 新数组）
+            Array.Copy(loaded, blocks, loaded.Length);
+            var loadedData = new VoxelChunkData(blocks, pos, new List<(BlockPosInWorld, Block)>(), fillAir: false);
             loadedData.SetLoadedTiles(tiles);
             return loadedData;
         }

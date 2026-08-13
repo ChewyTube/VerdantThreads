@@ -14,6 +14,7 @@ public class ChunkStreamer
 
     private readonly int lineOfSight;         // 水平视距
     private readonly int verticalLineOfSight; // 垂直视距，独立于水平视距，减少高空空气 chunk 加载
+    private readonly int seed;                // 世界种子（透传给 mesh 快照，供后台线程贴图随机旋转哈希用）
 
     private const int MAX_NEW_CHUNKS_PER_FRAME = 24;          // 每帧构建 chunk 上限（可调，保证生成追上相机移动）
     private const int MAX_MESH_UPLOAD_PER_FRAME = 8;    // 每帧 mesh 上传上限（可调）
@@ -41,12 +42,13 @@ public class ChunkStreamer
     private Vector3Int lastVCPosCam;     // 上一轮相机所在 chunk 坐标
     private bool hasPrevViewBox = false; // 是否已有上一轮视距盒（首帧为 false，旧盒视为空，避免坐标哨兵溢出）
 
-    public ChunkStreamer(TerrainGenerator terrainGen, ChunkStore store, int lineOfSight, int verticalLineOfSight)
+    public ChunkStreamer(TerrainGenerator terrainGen, ChunkStore store, int lineOfSight, int verticalLineOfSight, int seed)
     {
         this.terrainGen = terrainGen;
         this.store = store;
         this.lineOfSight = lineOfSight;
         this.verticalLineOfSight = verticalLineOfSight;
+        this.seed = seed;
         store.OnChunkUnloaded += HandleChunkUnloaded;
     }
 
@@ -323,6 +325,7 @@ public class ChunkStreamer
         }
         foreach (var p in toUnload)
         {
+            FlushPendingWritesForChunk(new(p.x, p.y, p.z)); // 先应用目标为该 chunk 的挂起写入
             store.UnloadChunk(p); // 内部同步保存 + 归还池 + 移除记录，并触发邻居重建回调
         }
 
@@ -350,6 +353,41 @@ public class ChunkStreamer
 
         // 相机已移动 → 三个就近队列的相对距离全部失效，统一标记重排
         _buildDataDirty = _meshBuildDirty = _uploadDirty = true;
+    }
+
+    // 卸载前排空目标是该 chunk 的挂起写入（块 + tile）：此时目标仍在 world 字典中，写入成功并随卸载存档，
+    // 避免跨 chunk 生成期写入（树冠/豌豆 tile）在目标卸载后静默丢弃导致边界内容永久残缺
+    private void FlushPendingWritesForChunk(VCPosInWorld vcPos)
+    {
+        var keptBlocks = new List<List<(BlockPosInWorld, Block)>>();
+        while (_pendingSetBlocksQueue.TryDequeue(out var list))
+        {
+            var rest = new List<(BlockPosInWorld, Block)>();
+            foreach (var (pos, block) in list)
+            {
+                if (pos.GetCorrespondingVCPos() == vcPos)
+                    store.SetBlock(block, pos, suppressUpdate: true);
+                else
+                    rest.Add((pos, block));
+            }
+            if (rest.Count > 0) keptBlocks.Add(rest);
+        }
+        foreach (var l in keptBlocks) _pendingSetBlocksQueue.Enqueue(l);
+
+        var keptTiles = new List<List<(BlockPosInWorld, Genome)>>();
+        while (_pendingTileWritesQueue.TryDequeue(out var list))
+        {
+            var rest = new List<(BlockPosInWorld, Genome)>();
+            foreach (var (pos, genome) in list)
+            {
+                if (pos.GetCorrespondingVCPos() == vcPos)
+                    store.SetTile(pos, new PeaTileData(genome, 0));
+                else
+                    rest.Add((pos, genome));
+            }
+            if (rest.Count > 0) keptTiles.Add(rest);
+        }
+        foreach (var l in keptTiles) _pendingTileWritesQueue.Enqueue(l);
     }
 
     // 后台生成单个 chunk 数据并直接入队（跨线程安全）；异常仅记录，不中断其他生成
@@ -388,10 +426,10 @@ public class ChunkStreamer
         VoxelChunk vc = store.GetChunk(vcPos);
         if (vc == null) return;
 
-        // 快照含豌豆 tile 基因（阶段 3 花贴图按基因选）；Y-1 邻居 tile 供顶部格跨 chunk 查基因
+        // 快照含豌豆 tile 基因（阶段 3 花贴图按基因选）；Y-1 邻居 tile 供顶部格跨 chunk 查基因；seed 供贴图随机旋转哈希
         MeshBuildData snapshot = ChunkMeshBuilder.CreateSnapshot(
             vcPos, vc.GetBlocksData(), store.GetChunkBlocks,
-            vc.TilesRaw, pos => store.GetChunk(pos)?.TilesRaw);
+            vc.TilesRaw, pos => store.GetChunk(pos)?.TilesRaw, seed);
         snapshot.Seq = vc.TakeBuildSeq();
         snapshot.ChunkId = vc.InstanceId;
 
