@@ -133,7 +133,8 @@ public class BlockUpdateCenter
         switch (b.GetBlockType())
         {
             case BlockType.PeaPlantTop:
-                break; // 顶部格不生长
+            case BlockType.PeaPlantMiddle:
+                break; // 顶部/中部格不生长
             case BlockType.PeaStem:
                 RandomTickPea(x, y, z, vcPos, blocks, b);
                 break;
@@ -142,27 +143,36 @@ public class BlockUpdateCenter
         }
     }
 
-    // 豌豆随机刻（从原 ChunkStore.TickPeaRandomTicks 原样迁移，行为不变）：
-    // 命中 PeaStem 且阶段 < 3 时以 PEA_GROWTH_ADVANCE_CHANCE 概率推进阶段（阶段只进不退）。
-    // 阶段 1→2 为两格高植株：需先占上方格（PeaPlantTop），上方被占则卡住等空间（MC tall plant 式）。
+    // 豌豆随机刻：命中 PeaStem 且阶段 < 3 时以 PEA_GROWTH_ADVANCE_CHANCE 概率推进阶段（阶段只进不退）。
+    // 阶段 1→2 长出植株：高茎（位点 6 显性）占 y+1/y+2 两格（PeaPlantMiddle + PeaPlantTop），
+    // 矮茎占 y+1 一格（PeaPlantTop）；目标格被占/未加载则卡住等空间（MC tall plant 式）。
+    // 阶段 2→3 开花：底部推进的同时把上方中部/顶部格阶段同步为 3。
     private void RandomTickPea(int x, int y, int z, VCPosInWorld vcPos, Block[,,] blocks, Block b)
     {
         int stage = (int)(b.GetBlockState() & BlockBits.StageMask);
-        if (stage >= 3) return; // 已开花结果，不再生长
+        if (stage >= 4) return; // 已结果，不再生长
 
         if (_random.NextDouble() >= Constants.PEA_GROWTH_ADVANCE_CHANCE) return;
 
         int s = Constants.CHUNK_SIZE;
         BlockPosInWorld worldPos = new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y, vcPos.Z * s + z);
+
+        // 高茎判定：位点 6 显性=高茎（3 格高）；tile 缺失按矮茎处理（防御）
+        PeaTileData tile = store.GetTile(worldPos);
+        bool tall = tile != null && PeaTextures.IsTall(tile.Genome);
+
         if (stage == 1)
         {
-            // 阶段 1→2（两格高）：上方格必须为 Air 才能长高，先放顶部格（PeaPlantTop），成功后才推进底部阶段
-            if (!TryEnsurePlantTop(vcPos, blocks, x, y, z)) return; // 上方被占 / 顶部目标 chunk 未加载 → 本次不推进，下次再试
+            // 阶段 1→2：先占上方格（高茎两格 / 矮茎一格），全部成功后推进底部阶段
+            bool ok = tall ? TryEnsureTallPlant(vcPos, blocks, x, y, z) : TryEnsurePlantTop(vcPos, blocks, x, y, z);
+            if (!ok) return; // 上方被占 / 目标 chunk 未加载 → 本次不推进，下次再试
             store.SetBlock(b.WithStage(2), worldPos);
         }
         else
         {
+            // 阶段 2→3：底部推进，同时把上方中部/顶部格阶段同步为 3（渲染据此切花荚贴图）
             store.SetBlock(b.WithStage((uint)(stage + 1)), worldPos);
+            SyncUpperStage(worldPos, (uint)(stage + 1));
         }
     }
 
@@ -189,8 +199,49 @@ public class BlockUpdateCenter
 
         if (topType != BlockType.Air) return false; // 上方被占 → 不推进
 
-        // 先放顶部格（跨 chunk 安全：未加载返回 false）；写入成功才由调用方推进底部阶段
-        return store.SetBlock(BlockRegistry.PeaPlantTop, new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + topLocalY, vcPos.Z * s + z));
+        // 先放顶部格（跨 chunk 安全：未加载返回 false）；写入成功才由调用方推进底部阶段。
+        // 矮茎顶部：带阶段 2 + 矮茎标志（渲染据此选矮茎贴图）
+        return store.SetBlock(BlockRegistry.PeaPlantTop.WithStage(2).WithTall(false), new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + topLocalY, vcPos.Z * s + z));
+    }
+
+    // 阶段 1→2 高茎补结构：y+1 放中部（PeaPlantMiddle）、y+2 放顶部（PeaPlantTop），均需 Air 且所在 chunk 已加载。
+    // 两格目标先全部确认 Air 再写入（避免只写中部不推进的中间态）；跨 chunk 由 TryReadBlock/SetBlock 处理。
+    private bool TryEnsureTallPlant(VCPosInWorld vcPos, Block[,,] blocks, int x, int y, int z)
+    {
+        int s = Constants.CHUNK_SIZE;
+        BlockPosInWorld midPos = new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y + 1, vcPos.Z * s + z);
+        BlockPosInWorld topPos = new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y + 2, vcPos.Z * s + z);
+
+        if (!TryReadBlock(midPos, out Block midCell)) return false; // 中部目标 chunk 未加载 → 本次跳过
+        if (midCell.GetBlockType() != BlockType.Air) return false;  // 中部被占 → 不推进
+        if (!TryReadBlock(topPos, out Block topCell)) return false; // 顶部目标 chunk 未加载 → 本次跳过
+        if (topCell.GetBlockType() != BlockType.Air) return false;  // 顶部被占 → 不推进
+
+        // 中部 + 顶部均确认 Air 后再写入（均带阶段 2 + 高茎标志）；写入成功才由调用方推进底部阶段
+        if (!store.SetBlock(BlockRegistry.PeaPlantMiddle.WithStage(2).WithTall(true), midPos)) return false;
+        return store.SetBlock(BlockRegistry.PeaPlantTop.WithStage(2).WithTall(true), topPos);
+    }
+
+    // 阶段 2→3 开花：把上方中部/顶部格的阶段同步为与底部一致（矮茎顶部 y+1；高茎中部 y+1、顶部 y+2）。
+    // 渲染据此在基础贴图/花荚贴图间切换；跨 chunk 由 TryReadBlock/SetBlock 处理（未加载跳过）。
+    private void SyncUpperStage(BlockPosInWorld bottomPos, uint stage)
+    {
+        if (TryReadBlock(new BlockPosInWorld(bottomPos.X, bottomPos.Y + 1, bottomPos.Z), out Block above))
+        {
+            if (above.GetBlockType() == BlockType.PeaPlantTop)
+            {
+                store.SetBlock(above.WithStage(stage), new BlockPosInWorld(bottomPos.X, bottomPos.Y + 1, bottomPos.Z));
+            }
+            else if (above.GetBlockType() == BlockType.PeaPlantMiddle)
+            {
+                store.SetBlock(above.WithStage(stage), new BlockPosInWorld(bottomPos.X, bottomPos.Y + 1, bottomPos.Z));
+                if (TryReadBlock(new BlockPosInWorld(bottomPos.X, bottomPos.Y + 2, bottomPos.Z), out Block top) &&
+                    top.GetBlockType() == BlockType.PeaPlantTop)
+                {
+                    store.SetBlock(top.WithStage(stage), new BlockPosInWorld(bottomPos.X, bottomPos.Y + 2, bottomPos.Z));
+                }
+            }
+        }
     }
 
     // ---- Step B：方块更新通知与联动分派 ----
@@ -241,14 +292,21 @@ public class BlockUpdateCenter
         {
             case BlockType.PeaStem:
             {
-                // 两格高植株底部被破坏（阶段≥2）→ 上方格若为 PeaPlantTop 一并清除（跨 chunk 由 store.SetBlock 处理）
+                // 植株底部被破坏（阶段≥2）→ 上方中部/顶部格一并清除（跨 chunk 由 store.SetBlock 处理）。
+                // 矮茎：y+1 顶部；高茎：y+1 中部 + y+2 顶部
                 if (source == BlockUpdateSource.Break &&
                     (int)(block.GetBlockState() & BlockBits.StageMask) >= 2)
                 {
-                    if (TryReadBlock(new BlockPosInWorld(pos.X, pos.Y + 1, pos.Z), out Block top) &&
-                        top.GetBlockType() == BlockType.PeaPlantTop)
+                    if (TryReadBlock(new BlockPosInWorld(pos.X, pos.Y + 1, pos.Z), out Block above) &&
+                        (above.GetBlockType() == BlockType.PeaPlantTop || above.GetBlockType() == BlockType.PeaPlantMiddle))
                     {
                         store.SetBlock(BlockRegistry.Air, new BlockPosInWorld(pos.X, pos.Y + 1, pos.Z));
+                        if (above.GetBlockType() == BlockType.PeaPlantMiddle &&
+                            TryReadBlock(new BlockPosInWorld(pos.X, pos.Y + 2, pos.Z), out Block top) &&
+                            top.GetBlockType() == BlockType.PeaPlantTop)
+                        {
+                            store.SetBlock(BlockRegistry.Air, new BlockPosInWorld(pos.X, pos.Y + 2, pos.Z));
+                        }
                     }
                 }
                 // 支撑检查：邻居方块变化（下方支撑被挖掉）或刚放置于无支撑位置 → 植株掉落
@@ -261,15 +319,45 @@ public class BlockUpdateCenter
                 }
                 break;
             }
-            case BlockType.PeaPlantTop:
+            case BlockType.PeaPlantMiddle:
             {
-                // 顶部格被破坏 → 下方若为 PeaStem 则退回阶段 0（不 RemoveTile——tile 基因保留，可继续生长）
+                // 中部格被破坏 → 上方顶部格（y+1 PeaPlantTop）一并清除 + 下方底部（y-1 PeaStem）退回阶段 0
                 if (source == BlockUpdateSource.Break)
                 {
+                    if (TryReadBlock(new BlockPosInWorld(pos.X, pos.Y + 1, pos.Z), out Block top) &&
+                        top.GetBlockType() == BlockType.PeaPlantTop)
+                    {
+                        store.SetBlock(BlockRegistry.Air, new BlockPosInWorld(pos.X, pos.Y + 1, pos.Z));
+                    }
                     if (TryReadBlock(new BlockPosInWorld(pos.X, pos.Y - 1, pos.Z), out Block bottom) &&
                         bottom.GetBlockType() == BlockType.PeaStem)
                     {
                         store.SetBlock(bottom.WithStage(0), new BlockPosInWorld(pos.X, pos.Y - 1, pos.Z));
+                    }
+                }
+                break;
+            }
+            case BlockType.PeaPlantTop:
+            {
+                // 顶部格被破坏 → 退回阶段 0（不 RemoveTile——tile 基因保留，可继续生长）。
+                // 矮茎：下方 y-1 是 PeaStem；高茎：下方 y-1 是 PeaPlantMiddle（一并清除）、y-2 是 PeaStem
+                if (source == BlockUpdateSource.Break)
+                {
+                    if (TryReadBlock(new BlockPosInWorld(pos.X, pos.Y - 1, pos.Z), out Block below))
+                    {
+                        if (below.GetBlockType() == BlockType.PeaStem)
+                        {
+                            store.SetBlock(below.WithStage(0), new BlockPosInWorld(pos.X, pos.Y - 1, pos.Z));
+                        }
+                        else if (below.GetBlockType() == BlockType.PeaPlantMiddle)
+                        {
+                            store.SetBlock(BlockRegistry.Air, new BlockPosInWorld(pos.X, pos.Y - 1, pos.Z));
+                            if (TryReadBlock(new BlockPosInWorld(pos.X, pos.Y - 2, pos.Z), out Block bottom) &&
+                                bottom.GetBlockType() == BlockType.PeaStem)
+                            {
+                                store.SetBlock(bottom.WithStage(0), new BlockPosInWorld(pos.X, pos.Y - 2, pos.Z));
+                            }
+                        }
                     }
                 }
                 break;

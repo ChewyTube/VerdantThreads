@@ -109,36 +109,111 @@ public static class ChunkMeshBuilder
                     {
                         int stage = (int)(d.Blocks[x, y, z].GetBlockState() & BlockBits.StageMask);
                         int xw = x + d.Pos.X * s, yw = y + d.Pos.Y * s, zw = z + d.Pos.Z * s;
-                        // 豌豆旋转（十字面片几何绕 Y 旋转，贴图随几何转；不对称贴图 → 可见朝向，见 TEXTURE_ROTATION.md 2.1）；
-                        // 顶部格用同一 hash（yw-1）保证同株同朝向
+                        // 豌豆旋转（十字面片几何绕 Y 旋转，贴图随几何转；不对称贴图 → 可见朝向，见 TEXTURE_ROTATION.md 2.1）
                         int rot = TextureRotation.GetRotation(d.Seed, xw, yw, zw);
-                        // 阶段 0/1：单格用阶段贴图；阶段 2：两格高无花植株；阶段 3：开花，按基因选 4 种花贴图之一
+                        // 阶段 0/1：单格用阶段贴图；阶段 2：植株无花；阶段 3：开花（列 3/6 花）；阶段 4：结果（列 4/7 荚）
+                        // 矮茎两格 / 高茎三格，按基因位点 6 选高/矮贴图
                         if (stage >= 3)
                         {
-                            // 底部格基因查本 chunk tile（tile 挂在 PeaStem 上）；缺失则回退无花贴图（防御，正常必有）
+                            // 底部格基因查本 chunk tile（tile 挂在 PeaStem 上）；缺失则回退矮茎基础贴图（防御，正常必有）
                             ushort key = (ushort)((x << 8) | (y << 4) | z);
                             Vector2Int cell = PeaTextures.PlantBottomCell;
                             if (d.TileGenomes != null && d.TileGenomes.TryGetValue(key, out var genome))
-                                PeaTextures.GetFlowerCells(genome, out cell, out _);
+                            {
+                                if (stage >= 4) // 结果：豆荚贴图（矮茎列 4 / 高茎列 7）
+                                {
+                                    if (PeaTextures.IsTall(genome)) PeaTextures.GetTallPodCells(genome, out cell, out _, out _);
+                                    else PeaTextures.GetPodCells(genome, out cell, out _);
+                                }
+                                else          // 阶段 3：花贴图（矮茎列 3 / 高茎列 6）
+                                {
+                                    if (PeaTextures.IsTall(genome)) PeaTextures.GetTallFlowerColorCells(genome, out cell, out _, out _);
+                                    else PeaTextures.GetFlowerColorCells(genome, out cell, out _);
+                                }
+                            }
                             meshData.AddPeaQuadCell(xw, yw, zw, cell, rot);
                         }
                         else if (stage == 2)
-                            meshData.AddPeaQuadCell(xw, yw, zw, PeaTextures.PlantBottomCell, rot);
+                        {
+                            // 阶段 2（无花）：按高茎基因选底部格基础贴图（基因缺失 → 矮茎）
+                            ushort key = (ushort)((x << 8) | (y << 4) | z);
+                            bool tall = d.TileGenomes != null && d.TileGenomes.TryGetValue(key, out var genome) && PeaTextures.IsTall(genome);
+                            meshData.AddPeaQuadCell(xw, yw, zw, tall ? PeaTextures.PlantTallBottomCell : PeaTextures.PlantBottomCell, rot);
+                        }
                         else
                             meshData.AddPeaQuad(xw, yw, zw, stage, rot);
                         continue;
                     }
-                    // 豌豆两格高植株顶部格：独立方块类型；阶段 3 花贴图随下方 PeaStem 基因（同株同基因，跨 chunk 由 TileGenomesBelow 兜底）
-                    if (bt == BlockType.PeaPlantTop)
+                    // 高茎豌豆中部格：独立方块类型（仅高茎三格植株存在）；阶段 3 荚贴图随底部格基因（跨 chunk 由 TileGenomesBelow 兜底）
+                    if (bt == BlockType.PeaPlantMiddle)
                     {
+                        int stage = (int)(d.Blocks[x, y, z].GetBlockState() & BlockBits.StageMask);
                         int xw = x + d.Pos.X * s, yw = y + d.Pos.Y * s, zw = z + d.Pos.Z * s;
                         // 与底部格同 hash（yw-1）→ 同株同朝向
                         int rot = TextureRotation.GetRotation(d.Seed, xw, yw - 1, zw);
-                        Vector2Int cell = PeaTextures.PlantTopCell;
+                        // 底部格在 y-1（中部格必然在底部格正上方）：y≥1 查本 chunk，y==0 跨 chunk 查下方邻居
                         Dictionary<ushort, Genome> genes = y > 0 ? d.TileGenomes : d.TileGenomesBelow;
                         ushort key = (ushort)((x << 8) | ((y > 0 ? y - 1 : Constants.CHUNK_SIZE - 1) << 4) | z);
+                        // 阶段 3 开花取高茎花贴图 middle、阶段 4 结果取高茎荚贴图 middle；否则（含基因缺失防御）用高茎无花中部贴图
+                        Vector2Int cell = PeaTextures.PlantTallMiddleCell;
                         if (genes != null && genes.TryGetValue(key, out var genome))
-                            PeaTextures.GetFlowerCells(genome, out _, out cell);
+                        {
+                            if (stage >= 4) PeaTextures.GetTallPodCells(genome, out _, out cell, out _);
+                            else if (stage == 3) PeaTextures.GetTallFlowerColorCells(genome, out _, out cell, out _);
+                        }
+                        meshData.AddPeaQuadCell(xw, yw, zw, cell, rot);
+                        continue;
+                    }
+                    // 豌豆顶部格：独立方块类型；阶段 3 花贴图随底部格基因（同株同基因，跨 chunk 由 TileGenomesBelow 兜底）。
+                    // 高茎/矮茎与阶段读自身状态位（顶部/中部格状态由逻辑层写入）
+                    if (bt == BlockType.PeaPlantTop)
+                    {
+                        int xw = x + d.Pos.X * s, yw = y + d.Pos.Y * s, zw = z + d.Pos.Z * s;
+                        bool tall = d.Blocks[x, y, z].IsTallPlant();
+                        int stage = (int)(d.Blocks[x, y, z].GetBlockState() & BlockBits.StageMask);
+                        // 与底部格同 hash（高茎底部在 y-2、矮茎底部在 y-1）→ 同株同朝向
+                        int rot = tall
+                            ? TextureRotation.GetRotation(d.Seed, xw, yw - 2, zw)
+                            : TextureRotation.GetRotation(d.Seed, xw, yw - 1, zw);
+                        // 底部格在本 chunk 内坐标（高茎 y-2、矮茎 y-1）；负数 → 底部格在下方邻居 chunk
+                        int bottomY = tall ? y - 2 : y - 1;
+                        Vector2Int cell = tall ? PeaTextures.PlantTallTopCell : PeaTextures.PlantTopCell;
+                        if (bottomY >= 0)
+                        {
+                            ushort key = (ushort)((x << 8) | (bottomY << 4) | z);
+                            if (d.TileGenomes != null && d.TileGenomes.TryGetValue(key, out var genome))
+                            {
+                                // 阶段 3 取花贴图、阶段 4 取荚贴图；阶段 2（无花）用基础顶部贴图
+                                if (stage == 3)
+                                {
+                                    if (tall) PeaTextures.GetTallFlowerColorCells(genome, out _, out _, out cell);
+                                    else PeaTextures.GetFlowerColorCells(genome, out _, out cell);
+                                }
+                                else if (stage >= 4)
+                                {
+                                    if (tall) PeaTextures.GetTallPodCells(genome, out _, out _, out cell);
+                                    else PeaTextures.GetPodCells(genome, out _, out cell);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // 矮茎 y==0 → 底部格在下方邻居 y=15；高茎 y==0 → y=14、y==1 → y=15
+                            ushort key = (ushort)((x << 8) | ((bottomY + Constants.CHUNK_SIZE) << 4) | z);
+                            if (d.TileGenomesBelow != null && d.TileGenomesBelow.TryGetValue(key, out var genome))
+                            {
+                                if (stage == 3)
+                                {
+                                    if (tall) PeaTextures.GetTallFlowerColorCells(genome, out _, out _, out cell);
+                                    else PeaTextures.GetFlowerColorCells(genome, out _, out cell);
+                                }
+                                else if (stage >= 4)
+                                {
+                                    if (tall) PeaTextures.GetTallPodCells(genome, out _, out _, out cell);
+                                    else PeaTextures.GetPodCells(genome, out _, out cell);
+                                }
+                            }
+                        }
                         meshData.AddPeaQuadCell(xw, yw, zw, cell, rot);
                         continue;
                     }
@@ -218,10 +293,11 @@ public static class ChunkMeshBuilder
         if (neighborBt == BlockType.Air || neighborBt == BlockType.Void) return false;
 
         var bt = d.Blocks[x, y, z].GetBlockType();
-        // 半透明方块（树叶）与不占满格子的豌豆（十字面片，含两格高植株顶部格）不剔除邻居面：透过它们能看到相邻方块
+        // 半透明方块（树叶）与不占满格子的豌豆（十字面片，含两格/三格高植株的顶部格与中部格）不剔除邻居面：透过它们能看到相邻方块
         if (bt == BlockType.Leaves || neighborBt == BlockType.Leaves) return false;
         if (bt == BlockType.PeaStem || neighborBt == BlockType.PeaStem) return false;
         if (bt == BlockType.PeaPlantTop || neighborBt == BlockType.PeaPlantTop) return false;
+        if (bt == BlockType.PeaPlantMiddle || neighborBt == BlockType.PeaPlantMiddle) return false;
 
         return true;
     }

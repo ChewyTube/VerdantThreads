@@ -33,8 +33,8 @@ while 补 tick，低帧率不丢 tick）：每 chunk 每 tick 抽 `PEA_RANDOM_TI
 - **随机刻**：**20 tick/秒**（`PEA_GROWTH_TICK_INTERVAL = 0.05f`），每 chunk 每 tick 抽
   `PEA_RANDOM_TICKS_PER_CHUNK_PER_TICK = 3` 个随机位置（MC 每 section 每 tick 3 次，1:1 对齐；
   `System.Random`，主线程游玩随机，与生成确定性契约无关——地物/地形生成不用它）；
-  命中 `PeaStem` 且阶段 < 3 时以 `PEA_GROWTH_ADVANCE_CHANCE = 1/3` 概率推进阶段（阶段只进不退）。
-- **阶段即状态**：生长阶段存方块状态位（`BlockBits.StageMask` bit16-17，0-3），
+  命中 `PeaStem` 且阶段 < 4 时以 `PEA_GROWTH_ADVANCE_CHANCE = 1/3` 概率推进阶段（阶段只进不退）。
+- **阶段即状态**：生长阶段存方块状态位（`BlockBits.StageMask` bit16-18，0-4），
   随机刻只碰方块（`WithStage` → `SetBlock` 置 changed → 下一帧自动重建 mesh），**不碰 tile 字典**。
 - **GrowthTime 退役**：MC 无进度计数器，删除 `GrowthTime` 全链路（`PeaTileData` / `TileSaveRecord` /
   `TickPeaGrowth` 阈值逻辑 / 回挂构造），存档载荷 tile 记录 14B → 10B。
@@ -43,7 +43,8 @@ while 补 tick，低帧率不丢 tick）：每 chunk 每 tick 抽 `PEA_RANDOM_TI
 
 ## 4. 两格高植株（阶段 2/3）
 
-阶段链：**0 最小苗（单格）→ 1 苗（单格）→ 2 两格高植株 → 3 开花结果（两格高）**。
+阶段链：**0 最小苗（单格）→ 1 苗（单格）→ 2 植株（两格/三格高）→ 3 开花（花贴图）→ 4 结果（荚贴图）**。
+高茎（位点 6 显性）阶段 2-4 为三格高（含 PeaPlantMiddle=10 中部格），矮茎两格高。
 
 - **顶部格是新方块 `BlockType.PeaPlantTop = 9`**（MC tall plant 式：可被射线命中、可存档、参与破坏联动）；
   顶部格**无 tile**（tile 只在底部 PeaStem 上）。
@@ -54,7 +55,7 @@ while 补 tick，低帧率不丢 tick）：每 chunk 每 tick 抽 `PEA_RANDOM_TI
   - 上方格必须为 Air（MC tall plant 式空间检查；顶部在相邻 chunk 时读邻居，未加载则本次跳过）；
   - 先 `SetBlock(PeaPlantTop)`（跨 chunk 安全，未加载返回 false），**写入成功才推进底部到阶段 2**；
   - 上方被占 → 卡住不推进，下次随机刻再试。
-- **阶段 2→3**：只推进底部阶段，顶部格不动（视觉暂与阶段 2 相同，花/荚贴图待后续替换）。
+- **阶段 2→3→4**：底部推进阶段，同时把上方中部/顶部格阶段同步（`SyncUpperStage`，跨 chunk 安全）；阶段 3 渲染花贴图（矮茎列 3 / 高茎列 6，花色×花位），阶段 4 渲染荚贴图（矮茎列 4 / 高茎列 7，荚色×花位）。
 - **顶部格不生长**：随机刻抽到 `PeaPlantTop` 直接 continue。
 - **破坏联动**（`BlockInteraction.TryBreakBlock`）：
   - 破坏底部（阶段≥2）→ 置 Air + RemoveTile（底部持 tile），上方 PeaPlantTop 一并置 Air；
@@ -84,14 +85,14 @@ while 补 tick，低帧率不丢 tick）：每 chunk 每 tick 抽 `PEA_RANDOM_TI
 ## 5. 验证方法（Play Mode）
 
 1. 删档起新世界 → 豌豆丛生成（阶段 0 最小苗）。
-2. 停留观察：豌豆在随机刻下逐阶段推进（约 3~3.5 分钟一阶段、10 分钟全熟），阶段只进不退；
-   阶段 2 起变为**两格高**（底 (2,5) / 顶 (2,4) 两段十字面片），阶段 3 顶部不动。
+2. 停留观察：豌豆在随机刻下逐阶段推进（约 3~3.5 分钟一阶段、约 13.7 分钟全熟），阶段只进不退；
+   阶段 2 起变为植株（矮茎两格 / 高茎三格十字面片），阶段 3 开花、阶段 4 结荚。
 3. 阶段 1→2 空间卡住：在豌豆正上方一格放方块 → 到达阶段 1 后不再长高（卡住），移开方块后恢复生长。
 4. 破坏联动：打掉两格高植株底部 → 顶部一并消失、tile 移除；打掉顶部 → 底部退回阶段 0（tile 保留可再长）。
 5. 中途退出重启（不删档）→ 已推进的阶段与顶部格保留（阶段存方块状态位，PeaPlantTop 随块数据自然存档）。
 6. 用 v2/v3 旧档启动 → 正常读回（tile 基因/世代保留，GrowthTime 丢弃）；旧档阶段≥2 豌豆经
    `RepairPeaPlants` 自动补出顶部格，孤儿顶部被清除。
-7. 全熟豌豆不再生长（阶段 3 判停）。
+7. 全熟豌豆不再生长（阶段 4 判停）；阶段 3 先开花、阶段 4 再结荚（花/荚贴图按基因变体区分）。
 
 ## 6. 存档兼容性
 

@@ -169,8 +169,10 @@ public class ChunkStore
     private static ushort TileKey(BlockPosInVoxelChunk pos)
         => (ushort)((pos.X << (Constants.CHUNK_SIZE_LOG2 * 2)) | (pos.Y << Constants.CHUNK_SIZE_LOG2) | pos.Z);
 
-    // 旧档完整性修复：扫描该 chunk 全部 16³ 格，修复两格高豌豆（PeaStem 阶段≥2 缺顶部 /
-    // 孤儿 PeaPlantTop / 跨 chunk「底部在 y=15、顶部在邻居 y=0」）。
+    // 旧档完整性修复：扫描该 chunk 全部 16³ 格，修复豌豆植株结构——
+    //   PeaStem 阶段≥2：按基因（位点6 高茎/矮茎）补齐中部+顶部 / 顶部（跨 chunk 到 Y+1）；
+    //   孤儿 PeaPlantTop/PeaPlantMiddle：结构不合法则清除；
+    //   跨 chunk「底部在 y=15、中部/顶部在邻居 y=0/1」与「底部 y=14、顶部在邻居 y=0」。
     // 主线程调用（ChunkStreamer 创建 chunk 成功后）；读邻居用 GetChunkBlocks（null=未加载跳过，
     // 等邻居 chunk 创建时它自己跑修复轮兜底），写用 SetBlock（false=目标不在视距内跳过）。
     public void RepairPeaPlants(VCPosInWorld vcPos)
@@ -184,86 +186,178 @@ public class ChunkStore
                 for (int z = 0; z < s; z++)
                 {
                     Block b = blocks[x, y, z];
-                    if (b.GetBlockType() == BlockType.PeaStem)
+                    switch (b.GetBlockType())
                     {
-                        // 阶段 ≥2 的两格高植株：上方缺 PeaPlantTop → 补顶
-                        if ((int)(b.GetBlockState() & BlockBits.StageMask) >= 2)
-                            RepairEnsureTop(vcPos, blocks, x, y, z);
-                    }
-                    else if (b.GetBlockType() == BlockType.PeaPlantTop)
-                    {
-                        RepairRemoveOrphanTop(vcPos, blocks, x, y, z); // 下方不是阶段≥2 的 PeaStem → 清孤儿顶
-                    }
-                    else if (y == 0 && b.GetBlockType() == BlockType.Air)
-                    {
-                        RepairTopFromBelow(vcPos, x, z); // y=0 Air：下方（邻居 y=15）若是阶段≥2 豌豆 → 补顶
+                        case BlockType.PeaStem:
+                            // 阶段 ≥2 的植株：按基因高/矮补齐结构（高茎 3 格 / 矮茎 2 格）
+                            if ((int)(b.GetBlockState() & BlockBits.StageMask) >= 2)
+                                RepairEnsurePlantStructure(vcPos, blocks, x, y, z);
+                            break;
+                        case BlockType.PeaPlantMiddle:
+                            RepairRemoveOrphanMiddle(vcPos, blocks, x, y, z);
+                            break;
+                        case BlockType.PeaPlantTop:
+                            RepairRemoveOrphanTop(vcPos, blocks, x, y, z);
+                            break;
+                        default:
+                            // 跨 chunk 补位：下方植株缺格则补（y=0 中部/顶部、y=1 顶部）
+                            if (b.GetBlockType() == BlockType.Air)
+                                RepairFillFromBelow(vcPos, blocks, x, y, z);
+                            break;
                     }
                 }
     }
 
-    // 阶段≥2 的 PeaStem 上方格非 PeaPlantTop 时：上方为 Air 则补顶部（PeaPlantTop）
-    private void RepairEnsureTop(VCPosInWorld vcPos, Block[,,] blocks, int x, int y, int z)
+    // 阶段≥2 的 PeaStem：按基因高/矮补齐上方结构。高茎 → 中部(y+1)+顶部(y+2)；矮茎 → 顶部(y+1)。
+    // 目标格非 Air 则不动（不覆盖既有内容）；已有中部/顶部则同步阶段与高/矮标志（旧档阶段为 0）。
+    // 目标在 Y+1 邻居 chunk 时由 GetChunkBlocks/SetBlock 处理（未加载返回 false，等它自己跑修复轮兜底）。
+    private void RepairEnsurePlantStructure(VCPosInWorld vcPos, Block[,,] blocks, int x, int y, int z)
     {
         int s = Constants.CHUNK_SIZE;
-        int topLocalY = y + 1;
+        Block bottom = blocks[x, y, z];
+        uint stage = (uint)(bottom.GetBlockState() & BlockBits.StageMask);
 
-        BlockType topType;
-        if (topLocalY < s)
+        // 高茎判定：读底部 tile 基因（位点 6 显性）；tile 缺失按矮茎（旧档两格结构保持原样）
+        PeaTileData tile = GetTile(new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y, vcPos.Z * s + z));
+        bool tall = tile != null && PeaTextures.IsTall(tile.Genome);
+
+        if (tall)
         {
-            topType = blocks[x, topLocalY, z].GetBlockType();
+            // 中部格 y+1（可能跨 chunk 到 Y+1 的 y=0）
+            BlockPosInWorld midPos = new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y + 1, vcPos.Z * s + z);
+            if (TryGetBlockAt(midPos, out Block mid))
+            {
+                if (mid.GetBlockType() == BlockType.Air)
+                    SetBlock(BlockRegistry.PeaPlantMiddle.WithStage(stage).WithTall(true), midPos, suppressUpdate: true);
+                else if (mid.GetBlockType() == BlockType.PeaPlantMiddle)
+                    SetBlock(mid.WithStage(stage).WithTall(true), midPos, suppressUpdate: true); // 阶段同步
+            }
+
+            // 顶部格 y+2（可能跨 chunk 到 Y+1 的 y=0/1）
+            BlockPosInWorld topPos = new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y + 2, vcPos.Z * s + z);
+            if (TryGetBlockAt(topPos, out Block top))
+            {
+                if (top.GetBlockType() == BlockType.Air)
+                    SetBlock(BlockRegistry.PeaPlantTop.WithStage(stage).WithTall(true), topPos, suppressUpdate: true);
+                else if (top.GetBlockType() == BlockType.PeaPlantTop)
+                    SetBlock(top.WithStage(stage).WithTall(true), topPos, suppressUpdate: true); // 阶段同步
+            }
         }
         else
         {
-            Block[,,] up = GetChunkBlocks(new VCPosInWorld(vcPos.X, vcPos.Y + 1, vcPos.Z));
-            if (up == null) return; // 上方 chunk 未加载：跳过，等它加载后由自身修复轮处理
-            topType = up[x, 0, z].GetBlockType();
+            // 矮茎：顶部格 y+1（可能跨 chunk 到 Y+1 的 y=0）
+            BlockPosInWorld topPos = new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y + 1, vcPos.Z * s + z);
+            if (TryGetBlockAt(topPos, out Block top))
+            {
+                if (top.GetBlockType() == BlockType.Air)
+                    SetBlock(BlockRegistry.PeaPlantTop.WithStage(stage).WithTall(false), topPos, suppressUpdate: true);
+                else if (top.GetBlockType() == BlockType.PeaPlantTop)
+                    SetBlock(top.WithStage(stage).WithTall(false), topPos, suppressUpdate: true); // 阶段同步
+            }
         }
-
-        if (topType == BlockType.PeaPlantTop) return; // 顶部已存在
-        if (topType != BlockType.Air) return;         // 上方被其他方块占：保持现状，不破坏既有内容
-
-        SetBlock(BlockRegistry.PeaPlantTop, new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + topLocalY, vcPos.Z * s + z), suppressUpdate: true); // 补顶部（存档修复不触发方块更新；false=目标未加载则跳过）
     }
 
-    // 孤儿顶部：下方不是 PeaStem（或阶段<2）→ 顶部置 Air 清除
+    // 孤儿中部：下方（y-1，y=0 时下邻居 y=15）不是「阶段≥2 的 PeaStem」→ 清除；合法则同步阶段 + 高茎标志
+    private void RepairRemoveOrphanMiddle(VCPosInWorld vcPos, Block[,,] blocks, int x, int y, int z)
+    {
+        int s = Constants.CHUNK_SIZE;
+        Block below = ReadCellAt(vcPos, blocks, x, y - 1, z);
+        bool valid = below.GetBlockType() == BlockType.PeaStem &&
+            (int)(below.GetBlockState() & BlockBits.StageMask) >= 2;
+        if (!valid)
+        {
+            SetBlock(BlockRegistry.Air, new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y, vcPos.Z * s + z), suppressUpdate: true);
+            return;
+        }
+        uint stage = (uint)(below.GetBlockState() & BlockBits.StageMask);
+        SetBlock(blocks[x, y, z].WithStage(stage).WithTall(true), new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y, vcPos.Z * s + z), suppressUpdate: true);
+    }
+
+    // 孤儿顶部：合法 = 下方是「阶段≥2 矮茎 PeaStem」（矮茎：顶部紧贴底部）
+    //  或 下方是 PeaPlantMiddle 且其下是「阶段≥2 高茎 PeaStem」（高茎：底部+中部+顶部）。
+    // 合法则同步阶段与高/矮标志；不合法则清除。
     private void RepairRemoveOrphanTop(VCPosInWorld vcPos, Block[,,] blocks, int x, int y, int z)
     {
         int s = Constants.CHUNK_SIZE;
-        int belowLocalY = y - 1;
+        Block below = ReadCellAt(vcPos, blocks, x, y - 1, z);
 
-        Block below = BlockRegistry.Air;
-        if (belowLocalY >= 0)
+        Block bottom = default;
+        bool tallTop = false;
+        if (below.GetBlockType() == BlockType.PeaStem)
         {
-            below = blocks[x, belowLocalY, z];
+            bottom = below;             // 矮茎顶部：下方即底部
         }
-        else
+        else if (below.GetBlockType() == BlockType.PeaPlantMiddle)
         {
-            Block[,,] down = GetChunkBlocks(new VCPosInWorld(vcPos.X, vcPos.Y - 1, vcPos.Z));
-            if (down == null) return; // 下方 chunk 未加载：跳过
-            below = down[x, s - 1, z];
+            bottom = ReadCellAt(vcPos, blocks, x, y - 2, z); // 高茎顶部：下方是中部、再下是底部
+            tallTop = true;
         }
 
-        // 合法底部 = PeaStem 且阶段 ≥ 2（两格高植株的顶部格才有存在意义）
-        bool validBottom = below.GetBlockType() == BlockType.PeaStem
-            && (int)(below.GetBlockState() & BlockBits.StageMask) >= 2;
-        if (!validBottom)
+        bool valid = bottom.GetBlockType() == BlockType.PeaStem &&
+            (int)(bottom.GetBlockState() & BlockBits.StageMask) >= 2;
+        if (!valid)
         {
-            SetBlock(BlockRegistry.Air, new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y, vcPos.Z * s + z), suppressUpdate: true); // 清除孤儿顶（存档修复不触发方块更新）
+            SetBlock(BlockRegistry.Air, new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y, vcPos.Z * s + z), suppressUpdate: true);
+            return;
+        }
+
+        uint stage = (uint)(bottom.GetBlockState() & BlockBits.StageMask);
+        SetBlock(blocks[x, y, z].WithStage(stage).WithTall(tallTop), new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + y, vcPos.Z * s + z), suppressUpdate: true);
+    }
+
+    // 跨 chunk 补位：本格是 Air，但下方（Y-1 邻居）是阶段≥2 豌豆、且上方结构缺失 → 补中部/顶部。
+    // 覆盖：y=0 Air + 下方矮茎 → 补顶部(y=0)；y=0 Air + 下方高茎 → 补中部(y=0)；
+    //      y=1 Air + 下方已补/已存在中部 → 补顶部(y=1)。循环按 y 升序，先补 y=0 再衔接 y=1。
+    private void RepairFillFromBelow(VCPosInWorld vcPos, Block[,,] blocks, int x, int y, int z)
+    {
+        int s = Constants.CHUNK_SIZE;
+        if (y == 0)
+        {
+            // 下方（Y-1 邻居 y=15）是阶段≥2 豌豆 → 高茎补中部 / 矮茎补顶部
+            if (TryGetBlockAt(new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s - 1, vcPos.Z * s + z), out Block below) &&
+                below.GetBlockType() == BlockType.PeaStem &&
+                (int)(below.GetBlockState() & BlockBits.StageMask) >= 2)
+            {
+                uint stage = (uint)(below.GetBlockState() & BlockBits.StageMask);
+                PeaTileData tile = GetTile(new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s - 1, vcPos.Z * s + z));
+                bool tall = tile != null && PeaTextures.IsTall(tile.Genome);
+                Block cell = tall ? BlockRegistry.PeaPlantMiddle : BlockRegistry.PeaPlantTop;
+                SetBlock(cell.WithStage(stage).WithTall(tall), new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s, vcPos.Z * s + z), suppressUpdate: true);
+            }
+        }
+        else if (y == 1)
+        {
+            // 下方（本 chunk y=0）是高茎中部 → 补顶部(y=1)
+            if (TryGetBlockAt(new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s, vcPos.Z * s + z), out Block below) &&
+                below.GetBlockType() == BlockType.PeaPlantMiddle)
+            {
+                uint stage = (uint)(below.GetBlockState() & BlockBits.StageMask);
+                SetBlock(BlockRegistry.PeaPlantTop.WithStage(stage).WithTall(true), new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s + 1, vcPos.Z * s + z), suppressUpdate: true);
+            }
         }
     }
 
-    // y=0 层 Air 格：下方格（邻居 chunk y=15）若是阶段≥2 的 PeaStem → 补顶部（覆盖跨 chunk 情形）
-    private void RepairTopFromBelow(VCPosInWorld vcPos, int x, int z)
+    // 读取世界坐标处方块（跨 chunk）；chunk 未加载返回 false
+    private bool TryGetBlockAt(BlockPosInWorld pos, out Block block)
+    {
+        Block[,,] b = GetChunkBlocks(pos.GetCorrespondingVCPos());
+        if (b == null) { block = default; return false; }
+        int m = Constants.CHUNK_SIZE - 1;
+        block = b[pos.X & m, pos.Y & m, pos.Z & m];
+        return true;
+    }
+
+    // 读取局部偏移格（y 越界时落到 Y±1 邻居 chunk；未加载返回 Air）
+    private Block ReadCellAt(VCPosInWorld vcPos, Block[,,] blocks, int x, int y, int z)
     {
         int s = Constants.CHUNK_SIZE;
-        Block[,,] down = GetChunkBlocks(new VCPosInWorld(vcPos.X, vcPos.Y - 1, vcPos.Z));
-        if (down == null) return; // 下方 chunk 未加载：跳过
-
-        Block below = down[x, s - 1, z];
-        if (below.GetBlockType() != BlockType.PeaStem) return;
-        if ((int)(below.GetBlockState() & BlockBits.StageMask) < 2) return;
-
-        SetBlock(BlockRegistry.PeaPlantTop, new BlockPosInWorld(vcPos.X * s + x, vcPos.Y * s, vcPos.Z * s + z), suppressUpdate: true); // 补顶部（存档修复不触发方块更新）
+        int m = s - 1;
+        int ly = y & m;
+        int cy = y >> Constants.CHUNK_SIZE_LOG2;
+        if (cy == 0) return blocks[x, ly, z]; // 同 chunk
+        Block[,,] n = GetChunkBlocks(new VCPosInWorld(vcPos.X, vcPos.Y + cy, vcPos.Z));
+        if (n == null) return BlockRegistry.Air;
+        return n[x, ly, z];
     }
 
     // 创建非空 chunk 对象；重复创建返回 false（不负责入队 mesh 构建，由调用方处理）

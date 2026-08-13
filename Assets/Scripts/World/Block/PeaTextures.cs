@@ -22,11 +22,39 @@ public static class PeaTextures
     public static readonly Vector2Int PlantBottomCell = new(2, 5); // pos_PeaPlantShort_bottom
     public static readonly Vector2Int PlantTopCell = new(2, 4);    // pos_PeaPlantShort_top
 
-    // 阶段 3（开花结果）荚贴图：豆荚色（绿/黄）× 花位置（腋生/顶生）4 种表型，每株 bottom/top 两张。
-    // 图集布局（main.py，整列 4）：row = (花位?0:4) + (荚色?0:2)，bottom=row、top=row+1：
+    // 高茎基础三格贴图（列 5，用户绘制）：底部=PeaStem 底部格、中部=PeaPlantMiddle、顶部=PeaPlantTop
+    public static readonly Vector2Int PlantTallBottomCell = new(5, 2); // 高茎底部格
+    public static readonly Vector2Int PlantTallMiddleCell = new(5, 1); // 高茎中部格
+    public static readonly Vector2Int PlantTallTopCell = new(5, 0);    // 高茎顶部格
+
+    // 阶段 3（开花）花贴图：花色（紫/白，位点2 显性=紫）× 花位置（位点5 显性=腋生）4 种表型。
+    // 矮茎列 3（bottom/top 两张）：row = (花位?0:4) + (花色?0:2)
+    //   腋紫 (3,0)/(3,1)  腋白 (3,2)/(3,3)  顶紫 (3,4)/(3,5)  顶白 (3,6)/(3,7)
+    public static void GetFlowerColorCells(Genome genome, out Vector2Int bottomCell, out Vector2Int topCell)
+    {
+        bool purple = genome.IsDominant(2);   // 花色：显性 → 紫
+        bool axillary = genome.IsDominant(5); // 花位置：显性 → 腋生
+        int row = (axillary ? 0 : 4) + (purple ? 0 : 2);
+        bottomCell = new Vector2Int(3, row);
+        topCell = new Vector2Int(3, row + 1);
+    }
+
+    // 高茎阶段 3 花贴图（列 6，stride 3）：row = (花位?0:6) + (花色?0:3)，bottom/middle/top = row / row+1 / row+2
+    //   腋紫 (6,0)/(6,1)/(6,2)  腋白 (6,3)/(6,4)/(6,5)  顶紫 (6,6)/(6,7)/(6,8)  顶白 (6,9)/(6,10)/(6,11)
+    public static void GetTallFlowerColorCells(Genome genome, out Vector2Int bottomCell, out Vector2Int middleCell, out Vector2Int topCell)
+    {
+        bool purple = genome.IsDominant(2);
+        bool axillary = genome.IsDominant(5);
+        int row = (axillary ? 0 : 6) + (purple ? 0 : 3);
+        bottomCell = new Vector2Int(6, row);
+        middleCell = new Vector2Int(6, row + 1);
+        topCell = new Vector2Int(6, row + 2);
+    }
+
+    // 阶段 4（结果）荚贴图：豆荚色（绿/黄，位点4 显性=绿）× 花位置（位点5 显性=腋生）4 种表型。
+    // 矮茎列 4（bottom/top）：row = (花位?0:4) + (荚色?0:2)
     //   腋绿 (4,0)/(4,1)  腋黄 (4,2)/(4,3)  顶绿 (4,4)/(4,5)  顶黄 (4,6)/(4,7)
-    // 表型判定与 PeaTraits/Genome 一致：位点4 豆荚色 显性=绿、位点5 花位置 显性=腋生
-    public static void GetFlowerCells(Genome genome, out Vector2Int bottomCell, out Vector2Int topCell)
+    public static void GetPodCells(Genome genome, out Vector2Int bottomCell, out Vector2Int topCell)
     {
         bool green = genome.IsDominant(4);    // 豆荚色：显性 → 绿
         bool axillary = genome.IsDominant(5); // 花位置：显性 → 腋生
@@ -34,6 +62,21 @@ public static class PeaTextures
         bottomCell = new Vector2Int(4, row);
         topCell = new Vector2Int(4, row + 1);
     }
+
+    // 高茎阶段 4 荚贴图（列 7，stride 3）：row = (花位?0:6) + (荚色?0:3)，bottom/middle/top = row / row+1 / row+2
+    //   腋绿 (7,0)/(7,1)/(7,2)  腋黄 (7,3)/(7,4)/(7,5)  顶绿 (7,6)/(7,7)/(7,8)  顶黄 (7,9)/(7,10)/(7,11)
+    public static void GetTallPodCells(Genome genome, out Vector2Int bottomCell, out Vector2Int middleCell, out Vector2Int topCell)
+    {
+        bool green = genome.IsDominant(4);
+        bool axillary = genome.IsDominant(5);
+        int row = (axillary ? 0 : 6) + (green ? 0 : 3);
+        bottomCell = new Vector2Int(7, row);
+        middleCell = new Vector2Int(7, row + 1);
+        topCell = new Vector2Int(7, row + 2);
+    }
+
+    // 茎高度：位点 6 显性 = 高茎（三格高）；隐性 = 矮茎（两格高）
+    public static bool IsTall(Genome genome) => genome.IsDominant(6);
 
     // 占位绘制已停用：阶段 2/3 改用用户绘制的 (2,4)/(2,5) 两格贴图，(2,1)/(2,0) 运行时占位退役。
     // 函数体保留为空（InstallToMaterial 调用点与 WorldManager 不变），绝不写任何像素，特别是 (2,4)/(2,5)。
