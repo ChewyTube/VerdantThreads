@@ -96,8 +96,9 @@ public class MeshData
         float v0 = 1f / totalSize * (sizePerTexture * cell.y + padding);
         float s = 1f / totalSize * pixelPerTexture;
 
-        Vector3[] a = { new(x, y, z), new(x + 1, y, z + 1), new(x + 1, y + h, z + 1), new(x, y + h, z) };
-        Vector3[] b = { new(x + 1, y, z), new(x, y, z + 1), new(x, y + h, z + 1), new(x + 1, y + h, z) };
+        // 交叉臂沿对角线缩至对角线长 = 1.0 格（偏移量 0.5f/√2 ≈ 0.3536f），消除水平~41% 拉伸
+        Vector3[] a = { new(x + 0.1464f, y, z + 0.1464f), new(x + 0.8536f, y, z + 0.8536f), new(x + 0.8536f, y + h, z + 0.8536f), new(x + 0.1464f, y + h, z + 0.1464f) };
+        Vector3[] b = { new(x + 0.8536f, y, z + 0.1464f), new(x + 0.1464f, y, z + 0.8536f), new(x + 0.1464f, y + h, z + 0.8536f), new(x + 0.8536f, y + h, z + 0.1464f) };
         Vector2[] uv = { new(u0, v0), new(u0 + s, v0), new(u0 + s, v0 + s), new(u0, v0 + s) };
 
         // 几何旋转：绕格心绕 Y 轴旋转（UV 不动，贴图随几何转；rotation=0 时跳过）

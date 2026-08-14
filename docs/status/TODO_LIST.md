@@ -53,24 +53,19 @@
 | Step 1d | 种植豌豆创建 tile（默认/随机 genome + 世代 0）；破坏移除 tile；写入路由镜像 `store.SetBlock` 的跨 chunk 分发 | ✅ |
 | Step 1e | 生长 tick（主线程挂 `World.Update`）：遍历豌豆 tile 按时间推进 stage → 写回 Block uint → changed → 网格重建；结荚可采收（网格路径零改动） | ✅ |
 | Step 1f | 存档 v2：`SaveVoxelChunk` 带 tile 段；读路径 v1/v2 分支；v1 自动升级 | ✅（载荷自描述，VRF1 文件头不动，v1 零迁移兼容） |
-| Step 1g | 验证：种豌豆 → 存档 → 重启 → 阶段与基因保留 | ⏳（需进编辑器 Play Mode，合并验证 1a-1f） |
+| Step 1g | 验证：种豌豆 → 存档 → 重启 → 阶段与基因保留 | ✅（玩家已确认 Play Mode 验证通过） |
 | Step 2 | 遗传/育种：采收种子携带双亲基因 → 种植 Crossover；突变；世代参与表型（全在 tile 内，不动 Block/网格/存档格式） | ⏳ |
 | Step 3 | 碱基序列：启用 tile 变长 payload；碱基序列 `byte[]` + 序列级突变；genome 作为投影重算 | ⏳ |
 | Step 2+ 泛化 | 等第 2 个复杂方块出现再做：tileType 标签 + 注册表分派 | ⏳ |
 
-## 批2：豌豆记录与标签系统（设计已定案，见 docs/design/TAG_SYSTEM.md）⏳
+## 豌豆采收系统（设计定案，见 docs/design/HARVEST_SYSTEM.md）⏳
 
-| 步骤 | 内容 | 状态 |
-|------|------|------|
-| 2a | `Genetics/Genome.cs`：uint32 打包 7 位点×2 等位×2bit，访问器/显性判定/Random/Crossover/Mutate | ⏳ |
-| 2b | `Genetics/PeaTrait.cs`：7 对性状定义表（名称/显性/隐性表现型/关键词） | ⏳ |
-| 2c | `Inventory/ItemInstance.cs` + `Inventory/Backpack.cs`：物品实例（itemType/显示名，genome/标签待 2a/2b 后扩展），非堆叠列表 | ✅ 基础已完成（物品系统） |
-| 2d | `Inventory/TagPresetConfig.cs`：ScriptableObject 预设（14 表现型 + 4 基因型），代码内建默认兜底 | ⏳ |
-| 2e | `Save/BackpackSaver.cs`：NBT 式极简 tag 树，落盘 `world_saves/backpack.dat` | ⏳ |
-| 2f | `UI/BackpackWindow.cs`（E 开关，原定 F 已调整）+ `UI/TagEditorWindow.cs`（双分区异色）+ `UI/StandardizeWindow.cs`（F9 调试向导） | ⏳（BackpackWindow 基础已由物品系统完成，剩 TagEditor/Standardize） |
-| 2g | `Genetics/GenomeValidator.cs`：`ValidateGenotypeTag` + 多性状重载（预留接口） | ⏳ |
-| 2h | `BlockInteraction.cs`：右键分发（命中 PeaStem → 按成熟度采摘：开花 1 青嫩豆荚 / 结荚 3-5 成熟豆荚）；`World.cs` 装配 Backpack+Saver；`Constants.cs` 常量 | ⏳ |
-| 2i | 验证：进 Play Mode 种豌豆→结荚→右键采摘→F 开背包看标签→编辑→F9 标准化→退出重进看背包存档 | ⏳ |
+| Phase | 内容 | 状态 |
+|-------|------|------|
+| Phase 0 | **物品系统重构**：新增 `ItemType` 枚举（独立于 `BlockType`）；`ItemInstance` 持 `ItemType` + 可选 `PlaceableBlockType`；增加 `phenotypeTags`/`genotypeTags` 标签字段；重构 `Backpack` 构造器 | ⏳ |
+| Phase 1 | **堆叠系统 + 背包存档**：背包支持堆叠（上限 64，按表型合并，内部分基因型计数）；`BackpackSaver`（NBT tag 树 → `backpack.dat`）；种子袋容器（右键打开，上限 1024）；`World.cs` 装配 | ⏳ |
+| Phase 2 | **采收逻辑 + 表型推导**：右键拦截 PeaStem（阶段≥3）；`PeaTrait.GetPhenotype(Genome)`；阶段3 → 青嫩豆荚×3~5（无基因，不可种）；阶段4 → 豌豆荚×12~16（带母本基因）；堆叠合并 | ⏳ |
+| Phase 3 | **分解（后置）**：合成窗口 / 手持右键分解豌豆荚 → 4~8 粒豌豆种子；优先存入种子袋 | ⏳ |
 
 ## 其他待办 ⏳
 
