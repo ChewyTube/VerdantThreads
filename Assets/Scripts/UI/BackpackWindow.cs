@@ -1,6 +1,7 @@
 using UnityEngine;
 
 // E 键开关的背包窗（IMGUI）：逐行列出全部物品（图标 + 中文名），点击行选中并同步热栏。
+// 右键种子袋行打开种子袋内容子面板（显示袋内按基因型分组的豌豆分布）。
 // 开关状态归属 Backpack（BackpackOpen），BlockInteraction 据此暂停破坏/放置。
 public class BackpackWindow : MonoBehaviour
 {
@@ -14,10 +15,26 @@ public class BackpackWindow : MonoBehaviour
 
     private void Update()
     {
+        if (backpack == null) return;
+
         // 切换背包开关（状态写在 Backpack 上，与其他组件共享同一来源）
-        if (backpack != null && Input.GetKeyDown(Constants.BACKPACK_TOGGLE_KEY))
+        if (Input.GetKeyDown(Constants.BACKPACK_TOGGLE_KEY))
         {
             backpack.BackpackOpen = !backpack.BackpackOpen;
+            if (!backpack.BackpackOpen) backpack.IsSeedBagOpen = false; // 关闭背包时同步关闭种子袋内容子面板
+        }
+
+        // 同步鼠标锁定状态：界面打开（背包窗 / 种子袋面板）时解锁并显示鼠标，否则锁定隐藏。
+        // 每帧同步：覆盖 CameraMove 失焦后的遗留状态，也兼容热栏右键直接置 BackpackOpen 的路径
+        if (backpack.BackpackOpen)
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+        }
+        else
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
         }
     }
 
@@ -56,6 +73,16 @@ public class BackpackWindow : MonoBehaviour
 
             Rect rowRect = new Rect(winRect.x + margin, winRect.y + titleHeight + i * rowHeight, width - margin * 2f, rowHeight - 4f);
 
+            // 右键种子袋行 → 打开种子袋内容子面板（在 GUI.Button 前检测，避免右键事件被按钮消费）
+            if (item.ItemType == ItemType.SeedBag &&
+                Event.current.type == EventType.MouseDown && Event.current.button == 1 &&
+                rowRect.Contains(Event.current.mousePosition))
+            {
+                backpack.IsSeedBagOpen = true;
+                backpack.OpenSeedBagSlotIndex = i;
+                Event.current.Use();
+            }
+
             // 当前选中行高亮；整行可点击 → 选中该物品（热栏同步读同一 SelectedIndex，无需额外通知）
             GUI.backgroundColor = i == backpack.SelectedIndex
                 ? new Color(1f, 0.85f, 0.25f, 0.85f)
@@ -71,23 +98,85 @@ public class BackpackWindow : MonoBehaviour
             {
                 GUI.DrawTextureWithTexCoords(
                     new Rect(rowRect.x + 4f, rowRect.y + 4f, rowRect.height - 8f, rowRect.height - 8f),
-                    atlas, CalcIconUVRect(item.ItemType));
+                    atlas, CalcIconUVRect(item));
             }
 
-            // 中文显示名
+            // 中文显示名 + 堆叠数量（Count > 1 时显示 xN）
+            int count = backpack.GetStackCount(i);
+            string label = count > 1 ? $"{item.DisplayName} x{count}" : item.DisplayName;
             GUI.Label(
                 new Rect(rowRect.x + rowRect.height + 6f, rowRect.y + 6f, rowRect.width - rowRect.height - 12f, 22f),
-                item.DisplayName);
+                label);
+        }
+
+        // 种子袋内容子面板（覆盖在背包窗右侧）：数据源 = 种子袋物品的 SeedBag.Peas（按基因型分组计数）。
+        // 注意：种子袋物品本身无 Genome，其 StackSlot 的基因型计数为空，必须从 item.SeedBag.Peas 读取
+        if (backpack.IsSeedBagOpen)
+        {
+            ItemInstance seedBagItem = backpack[backpack.OpenSeedBagSlotIndex];
+            if (seedBagItem != null && seedBagItem.SeedBag != null)
+            {
+                var peas = seedBagItem.SeedBag.Peas;
+
+                const float subWidth = 260f;
+                float subHeight = titleHeight + (peas.Count + 1) * rowHeight + margin * 2f; // +1 行给关闭按钮
+                Rect subRect = new Rect(winRect.x + winRect.width + margin, winRect.y, subWidth, subHeight);
+
+                // 子面板背景与标题（总粒数 / 容量）
+                GUI.Box(subRect, GUIContent.none);
+                GUI.Label(
+                    new Rect(subRect.x + margin, subRect.y + margin, subWidth - margin * 2f, titleHeight),
+                    $"种子袋（{seedBagItem.SeedBag.TotalCount}/{Constants.SEED_BAG_CAPACITY}）");
+
+                // 逐行显示基因型分布：Genome.ToString() 为 14 字符等位串 + x数量
+                int rowIdx = 0;
+                foreach (var kv in peas)
+                {
+                    Rect peaRow = new Rect(subRect.x + margin, subRect.y + titleHeight + rowIdx * rowHeight, subWidth - margin * 2f, rowHeight - 4f);
+                    GUI.Label(new Rect(peaRow.x, peaRow.y + 6f, subWidth - margin * 2f, 22f), $"{kv.Key} x{kv.Value}");
+                    rowIdx++;
+                }
+
+                // 关闭按钮
+                Rect closeRect = new Rect(subRect.x + margin, subRect.y + titleHeight + peas.Count * rowHeight + margin, subWidth - margin * 2f, rowHeight - 4f);
+                if (GUI.Button(closeRect, "关闭"))
+                {
+                    backpack.IsSeedBagOpen = false;
+                }
+            }
         }
     }
 
-    // 物品图标 UV：与热栏同一套 24px cell 换算（16px 贴图 + 两侧 4px padding），row 从图集底部起算。
-    // 豌豆用 PeaTextures.CellByStage[0]（苗期），其余用 BlockUVMap 的 Up 面 cell。
-    private static Rect CalcIconUVRect(BlockType blockType)
+    // 物品图标 UV：图集 768×768 = 32×32 个 24px cell（16px 贴图 + 两侧 4px padding），row 从图集底部起算。
+    // 豌豆种子特判（PeaStem 无 BlockUVMap 条目，走 Fallback 会显示错误图标）；其余可放置方块取 Up 面 cell；
+    // 非方块物品（豆荚/种子袋等）按类型+基因选图集 cell。
+    private static Rect CalcIconUVRect(ItemInstance item)
     {
-        Vector2Int cell = blockType == BlockType.PeaStem
-            ? PeaTextures.CellByStage[0]
-            : BlockUVMap.GetUV(blockType, Direction.Up);
+        Vector2Int cell;
+        if (item.ItemType == ItemType.PeaSeedBlock)
+        {
+            // 豌豆种子 → 最小苗图标（不随可放置方块走 BlockUVMap）
+            cell = PeaTextures.CellByStage[0];
+        }
+        else if (item.PlaceableBlockType.HasValue)
+        {
+            // 可放置方块 → 从 BlockUVMap 取 Up 面 cell
+            cell = BlockUVMap.GetUV(item.PlaceableBlockType.Value, Direction.Up);
+        }
+        else
+        {
+            // 非方块物品 → 按类型选图集 cell（豌豆荚/豌豆粒按基因选表型图标；青嫩豆荚暂用占位）
+            cell = item.ItemType switch
+            {
+                ItemType.PeaSeed when item.Genome.HasValue => PeaTextures.GetItemSeedCell(item.Genome.Value),
+                ItemType.PeaSeed => PeaTextures.CellByStage[0], // 无基因兜底
+                ItemType.PeaPod when item.Genome.HasValue => PeaTextures.GetItemPodCell(item.Genome.Value),
+                ItemType.PeaPod => new Vector2Int(0, 0),        // 无基因兜底（占位）
+                ItemType.SeedBag => PeaTextures.ItemSeedBagCell,
+                ItemType.GreenBeanPod => new Vector2Int(0, 0),  // 占位，后续更换
+                _ => new Vector2Int(0, 0),
+            };
+        }
         // Rect 不支持 / 运算符，逐分量除以 768 得到归一化 UV
         Rect uv = new Rect(cell.x * 24 + 4, cell.y * 24 + 4, 16, 16);
         return new Rect(uv.x / 768f, uv.y / 768f, uv.width / 768f, uv.height / 768f);

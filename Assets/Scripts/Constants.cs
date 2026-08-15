@@ -14,6 +14,9 @@ public static class Constants
     // ---- 物品栏（热栏）与背包 ----
     public const int HOTBAR_SLOT_COUNT = 9;               // 热栏固定槽位数
     public const KeyCode BACKPACK_TOGGLE_KEY = KeyCode.E; // 背包窗开关按键
+    public const int STACK_LIMIT = 64;                 // 物品单格堆叠上限
+    public const int SEED_BAG_CAPACITY = 1024;         // 种子袋容量上限（豌豆总数）
+    public const string BACKPACK_SAVE_FILE = "backpack.dat"; // 背包存档文件名（world_saves 目录下）
 
     // ---- 豌豆生长（MC 随机刻制：20 tick/秒，每 tick 每 chunk 抽随机位置，命中豌豆按概率推进阶段）----
     public const float PEA_GROWTH_TICK_INTERVAL = 0.05f; // 随机刻 tick 间隔（秒）：1/20s = 每秒 20 tick（MC 同款）

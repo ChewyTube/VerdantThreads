@@ -48,7 +48,8 @@ public class World : MonoBehaviour
 
         // 物品系统装配：创建背包（选择状态唯一权威），挂 UI 组件并注入引用。
         // AddComponent 后立即 Init，保证注入先于首次 OnGUI（同一 Awake 帧内完成）
-        Backpack = new Backpack();
+        // 有存档则读回背包（含堆叠/种子袋内容），无存档用默认物品
+        Backpack = BackpackSaver.Load() ?? new Backpack();
         HotbarWindow hotbar = gameObject.AddComponent<HotbarWindow>();
         hotbar.Init(Backpack);
         BackpackWindow backpackWindow = gameObject.AddComponent<BackpackWindow>();
@@ -97,6 +98,8 @@ public class World : MonoBehaviour
     void OnApplicationQuit()
     {
         SaveAllLoadedChunks();
+        // 背包存档（含堆叠数量、内部分基因型分布、种子袋内容）；失败仅日志警告不影响退出
+        if (Backpack != null) BackpackSaver.Save(Backpack);
     }
 
     // 退出兜底：卸载路径只保存被卸载的 chunk，仍在内存的 chunk 若不主动入队会丢修改

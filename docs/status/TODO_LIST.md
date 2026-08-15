@@ -55,16 +55,16 @@
 | Step 1f | 存档 v2：`SaveVoxelChunk` 带 tile 段；读路径 v1/v2 分支；v1 自动升级 | ✅（载荷自描述，VRF1 文件头不动，v1 零迁移兼容） |
 | Step 1g | 验证：种豌豆 → 存档 → 重启 → 阶段与基因保留 | ✅（玩家已确认 Play Mode 验证通过） |
 | Step 2 | 遗传/育种：采收种子携带双亲基因 → 种植 Crossover；突变；世代参与表型（全在 tile 内，不动 Block/网格/存档格式） | ⏳ |
-| Step 3 | 碱基序列：启用 tile 变长 payload；碱基序列 `byte[]` + 序列级突变；genome 作为投影重算 | ⏳ |
+| Step 3 | 碱基序列：启用 tile 变长 payload（**HTT 载荷机制已定案**，见 `docs/design/HTT.md`）；碱基序列 `byte[]` + 序列级突变；genome 作为投影重算 | ⏳ |
 | Step 2+ 泛化 | 等第 2 个复杂方块出现再做：tileType 标签 + 注册表分派 | ⏳ |
 
 ## 豌豆采收系统（设计定案，见 docs/design/HARVEST_SYSTEM.md）⏳
 
 | Phase | 内容 | 状态 |
 |-------|------|------|
-| Phase 0 | **物品系统重构**：新增 `ItemType` 枚举（独立于 `BlockType`）；`ItemInstance` 持 `ItemType` + 可选 `PlaceableBlockType`；增加 `phenotypeTags`/`genotypeTags` 标签字段；重构 `Backpack` 构造器 | ⏳ |
-| Phase 1 | **堆叠系统 + 背包存档**：背包支持堆叠（上限 64，按表型合并，内部分基因型计数）；`BackpackSaver`（NBT tag 树 → `backpack.dat`）；种子袋容器（右键打开，上限 1024）；`World.cs` 装配 | ⏳ |
-| Phase 2 | **采收逻辑 + 表型推导**：右键拦截 PeaStem（阶段≥3）；`PeaTrait.GetPhenotype(Genome)`；阶段3 → 青嫩豆荚×3~5（无基因，不可种）；阶段4 → 豌豆荚×12~16（带母本基因）；堆叠合并 | ⏳ |
+| Phase 0 | **物品系统重构**：新增 `ItemType` 枚举（独立于 `BlockType`）；`ItemInstance` 持 `ItemType` + 可选 `PlaceableBlockType`；增加 `phenotypeTags`/`genotypeTags` 标签字段；重构 `Backpack` 构造器 | ✅（2026-08-14） |
+| Phase 1 | **堆叠系统 + 背包存档**：背包支持堆叠（上限 64，按表型合并，内部分基因型计数）；`BackpackSaver`（二进制 `BPK1` 格式 → `backpack.dat`）；种子袋容器（右键打开，上限 1024）；`World.cs` 装配 | ✅（2026-08-14） |
+| Phase 2 | **采收逻辑 + 表型推导**：右键拦截豌豆（阶段≥3，含中段/顶端）；青嫩豆荚 / 豌豆荚（**采摘次数与产量由 8 个新基因共同控制**，`HarvestGenome` 存 HTT 载荷，见 HARVEST_SYSTEM.md §5.2 + `docs/design/HTT.md`）；采收后回退阶段 2，次数耗尽整株枯萎（`PeaWithered` 方块，玩家破坏去除）；vrf v4 + BPK1 v2 存档升级 | ⏳ 设计已定案（2026-08-16 修订），待实施 |
 | Phase 3 | **分解（后置）**：合成窗口 / 手持右键分解豌豆荚 → 4~8 粒豌豆种子；优先存入种子袋 | ⏳ |
 
 ## 其他待办 ⏳

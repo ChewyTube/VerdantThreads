@@ -43,4 +43,13 @@ public static class PeaTraits
         if (locus < 0 || locus >= All.Length) return default;
         return All[locus];
     }
+
+    // 计算表型标签数组：7 位点各取显性/隐性表型名（堆叠分组依据）
+    public static string[] GetPhenotypeTags(Genome genome)
+    {
+        var tags = new string[All.Length];
+        for (int i = 0; i < All.Length; i++)
+            tags[i] = genome.IsDominant(i) ? All[i].DominantPhenotype : All[i].RecessivePhenotype;
+        return tags;
+    }
 }

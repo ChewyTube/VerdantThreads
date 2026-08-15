@@ -15,16 +15,25 @@ public class CameraMove : MonoBehaviour
     private Vector3 currentVelocity;
     private float pitch;
 
+    private World world; // 缓存引用：背包窗打开时暂停相机输入（鼠标解锁用于点击 IMGUI）
+
     void Start()
     {
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible = false;
         pitch = transform.eulerAngles.x;
         if (pitch > 180f) pitch -= 360f;
+
+        // 场景引用兜底：未在 Inspector 拖 World 时自动查找（与 BlockInteraction 一致）
+        if (world == null) world = FindObjectOfType<World>();
     }
 
     void Update()
     {
+        // 背包窗 / 种子袋面板打开时暂停相机输入：鼠标已解锁用于点击 IMGUI，
+        // 继续旋转会干扰点击，移动也会让玩家在界面操作时漂移
+        if (world != null && world.Backpack != null && world.Backpack.BackpackOpen) return;
+
         HandleRotation();
         HandleMovement();
     }

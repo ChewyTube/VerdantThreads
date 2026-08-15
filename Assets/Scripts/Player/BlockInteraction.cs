@@ -97,11 +97,14 @@ public class BlockInteraction : MonoBehaviour
         // 目标格已是固体 → 忽略
         if (IsSolid(placePos.X, placePos.Y, placePos.Z)) return;
 
+        // 非可放置物品（豆荚/种子袋等）→ 不放置（未来可做其他右键交互）
+        if (current.PlaceableBlockType == null) return;
+
         // 放置成功（目标 chunk 存在/按需创建）才继续；PeaStem 放置时同步创建 tile（随机基因 + 世代 0）
-        if (world.SetBlock(BlockRegistry.GetBlock(current.ItemType), placePos))
+        if (world.SetBlock(BlockRegistry.GetBlock(current.PlaceableBlockType.Value), placePos))
         {
             // 种植联动：豌豆种子放置 → 创建 tile 记录基因/世代/生长进度（生长 tick 据此推进阶段）
-            if (current.ItemType == BlockType.PeaStem)
+            if (current.ItemType == ItemType.PeaSeedBlock)
             {
                 world.SetTile(placePos, new PeaTileData(current.Genome ?? Genome.Random(), 0));
             }

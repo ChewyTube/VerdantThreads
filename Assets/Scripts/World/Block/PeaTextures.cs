@@ -78,6 +78,36 @@ public static class PeaTextures
     // 茎高度：位点 6 显性 = 高茎（三格高）；隐性 = 矮茎（两格高）
     public static bool IsTall(Genome genome) => genome.IsDominant(6);
 
+    // 枯萎植株贴图（列 8，用户绘制）：矮茎 2 格 + 高茎 3 格。
+    // 矮茎 (8,0)/(8,1) bottom/top；高茎 (8,2)/(8,3)/(8,4) bottom/middle/top
+    public static readonly Vector2Int WitheredShortBottomCell = new(8, 0);
+    public static readonly Vector2Int WitheredShortTopCell = new(8, 1);
+    public static readonly Vector2Int WitheredTallBottomCell = new(8, 2);
+    public static readonly Vector2Int WitheredTallMiddleCell = new(8, 3);
+    public static readonly Vector2Int WitheredTallTopCell = new(8, 4);
+
+    // 物品图标（列 9-10，用户绘制）：
+    // 豌豆荚图标：豆荚色（绿/黄，位点4 显性=绿）× 豆荚形状（饱满/皱缩，位点3 显性=饱满）
+    //   (9,0) 绿饱满 (9,1) 绿皱缩 (9,2) 黄饱满 (9,3) 黄皱缩
+    public static Vector2Int GetItemPodCell(Genome genome)
+    {
+        bool green = genome.IsDominant(4);
+        bool full = genome.IsDominant(3);
+        return new Vector2Int(9, (green ? 0 : 2) + (full ? 0 : 1));
+    }
+
+    // 豌豆粒图标：子叶色（黄/绿，位点1 显性=黄）× 种子形状（圆粒/皱粒，位点0 显性=圆粒）
+    //   (10,0) 黄圆 (10,1) 黄皱 (10,2) 绿圆 (10,3) 绿皱
+    public static Vector2Int GetItemSeedCell(Genome genome)
+    {
+        bool yellow = genome.IsDominant(1);
+        bool round = genome.IsDominant(0);
+        return new Vector2Int(10, (yellow ? 0 : 2) + (round ? 0 : 1));
+    }
+
+    // 种子袋图标 (10,4)
+    public static readonly Vector2Int ItemSeedBagCell = new(10, 4);
+
     // 占位绘制已停用：阶段 2/3 改用用户绘制的 (2,4)/(2,5) 两格贴图，(2,1)/(2,0) 运行时占位退役。
     // 函数体保留为空（InstallToMaterial 调用点与 WorldManager 不变），绝不写任何像素，特别是 (2,4)/(2,5)。
     public static void PaintAtlasPlaceholders(Texture2D atlas)
