@@ -26,6 +26,10 @@ public class ItemInstance
     // 种子袋内容（仅 ItemType.SeedBag 物品持有；其余为 null）
     public SeedBag SeedBag { get; }
 
+    // HTT 载荷（可空，默认 null）：豌豆荚携带母本采收基因（8 位点数量性状，见 HarvestGenome），Phase 2 使用。
+    // 序列化/反序列化均在主线程进行（见 HTTSerializer / docs/design/HTT.md）
+    public HTTCompound Payload { get; set; }
+
     // 可放置方块物品构造：绑定对应 BlockType
     public ItemInstance(ItemType itemType, string displayName, BlockType placeableBlockType)
     {

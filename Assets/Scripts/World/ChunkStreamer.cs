@@ -134,14 +134,21 @@ public class ChunkStreamer
                         builtCount++;
                         EnqueueMeshBuild(pos);
 
-                        // 存档 v3：把读回的 tile 快照回挂到新创建的 chunk（纯值数组，主线程消费）。
+                        // 存档 v4：把读回的 tile 快照回挂到新创建的 chunk（纯值数组，主线程消费）。
+                        // HTT 载荷反序列化在主线程进行（worker 只搬运 PayloadBytes 纯字节，绝不触碰 HTT 对象）；
+                        // 反序列化失败返回 null → 回退基线（无载荷），无需额外处理。
                         // 地物产出的 tile（豌豆丛）走独立 _pendingTileWritesQueue 世界坐标通道，不在此回挂
                         var vc = store.GetChunk(pos);
                         var loadedTiles = d.GetLoadedTiles();
                         if (vc != null && loadedTiles.Length > 0)
                         {
                             foreach (var r in loadedTiles)
-                                vc.SetTile(r.Key, new PeaTileData(new Genome(r.GenomeValue), r.Generation));
+                            {
+                                var tile = new PeaTileData(new Genome(r.GenomeValue), r.Generation);
+                                if (r.PayloadBytes != null && r.PayloadBytes.Length > 0)
+                                    tile.Payload = HTTSerializer.Deserialize(r.PayloadBytes);
+                                vc.SetTile(r.Key, tile);
+                            }
                         }
 
                         // 旧档修复：两格高豌豆缺顶/孤儿顶/跨 chunk 顶补齐（新生成世界阶段全为 0，天然无操作）
