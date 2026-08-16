@@ -26,7 +26,7 @@ public class ChunkStreamer
 
     private readonly ConcurrentQueue<VoxelChunkData> _pendingBuildQueue = new();
     private readonly ConcurrentQueue<List<(BlockPosInWorld, Block)>> _pendingSetBlocksQueue = new();
-    private readonly ConcurrentQueue<List<(BlockPosInWorld, Genome)>> _pendingTileWritesQueue = new(); // 地物 tile 跨 chunk 路由（与 pendingBlocks 语义一致，主线程重放）
+    private readonly ConcurrentQueue<List<(BlockPosInWorld, Genome, HarvestGenome)>> _pendingTileWritesQueue = new(); // 地物 tile 跨 chunk 路由（含采收基因，纯值元组跨线程安全；与 pendingBlocks 语义一致，主线程重放）
     private readonly ConcurrentQueue<(VCPosInWorld, MeshData)> _pendingMeshUploadQueue = new();        // 后台已生成的 MeshData，待主线程就近上传
 
     // ④ 近处优先 + 只补新暴露环
@@ -195,21 +195,23 @@ public class ChunkStreamer
         }
         // 地物 tile 路由：主线程按世界坐标 SetTile；目标 chunk 已加载即成功，未加载且在视距内则下帧重试（与 pendingBlocks 语义一致）
         int tileSetCount = 0;
-        var retryTiles = new List<(BlockPosInWorld, Genome)>();
+        var retryTiles = new List<(BlockPosInWorld, Genome, HarvestGenome)>();
         while (tileSetCount < MAX_TILES_PER_FRAME && _pendingTileWritesQueue.TryDequeue(out var tileList))
         {
             int consumed = 0;
-            foreach (var (pos, genome) in tileList)
+            foreach (var (pos, genome, harvestGenome) in tileList)
             {
                 if (tileSetCount >= MAX_TILES_PER_FRAME) break; // 预算耗尽，停止本列表
 
-                if (store.SetTile(pos, new PeaTileData(genome, 0))) // 目标 chunk 已加载 → 成功
+                var tile = new PeaTileData(genome, 0);
+                tile.SetHarvestGenome(harvestGenome); // 自然生成株：确定性采收基因（PeaClumpFeature 派生）
+                if (store.SetTile(pos, tile)) // 目标 chunk 已加载 → 成功
                 {
                     tileSetCount++;
                 }
                 else if (IsWithinViewDistance(pos.GetCorrespondingVCPos()))
                 {
-                    retryTiles.Add((pos, genome)); // 视距内未加载：下帧重试（等邻居 chunk 加载后补齐）
+                    retryTiles.Add((pos, genome, harvestGenome)); // 视距内未加载：下帧重试（等邻居 chunk 加载后补齐）
                 }
                 consumed++;
             }
@@ -300,8 +302,12 @@ public class ChunkStreamer
         // 地物 tile 同样排空（避免退出时丢跨 chunk 豌豆 tile；块与 tile 保持一致）
         while (_pendingTileWritesQueue.TryDequeue(out var tileList))
         {
-            foreach (var (pos, genome) in tileList)
-                store.SetTile(pos, new PeaTileData(genome, 0));
+            foreach (var (pos, genome, harvestGenome) in tileList)
+            {
+                var tile = new PeaTileData(genome, 0);
+                tile.SetHarvestGenome(harvestGenome); // 自然生成株：确定性采收基因（PeaClumpFeature 派生）
+                store.SetTile(pos, tile);
+            }
         }
     }
 
@@ -381,16 +387,20 @@ public class ChunkStreamer
         }
         foreach (var l in keptBlocks) _pendingSetBlocksQueue.Enqueue(l);
 
-        var keptTiles = new List<List<(BlockPosInWorld, Genome)>>();
+        var keptTiles = new List<List<(BlockPosInWorld, Genome, HarvestGenome)>>();
         while (_pendingTileWritesQueue.TryDequeue(out var list))
         {
-            var rest = new List<(BlockPosInWorld, Genome)>();
-            foreach (var (pos, genome) in list)
+            var rest = new List<(BlockPosInWorld, Genome, HarvestGenome)>();
+            foreach (var (pos, genome, harvestGenome) in list)
             {
                 if (pos.GetCorrespondingVCPos() == vcPos)
-                    store.SetTile(pos, new PeaTileData(genome, 0));
+                {
+                    var tile = new PeaTileData(genome, 0);
+                    tile.SetHarvestGenome(harvestGenome); // 自然生成株：确定性采收基因（PeaClumpFeature 派生）
+                    store.SetTile(pos, tile);
+                }
                 else
-                    rest.Add((pos, genome));
+                    rest.Add((pos, genome, harvestGenome));
             }
             if (rest.Count > 0) keptTiles.Add(rest);
         }
@@ -414,10 +424,10 @@ public class ChunkStreamer
                 // 跨 chunk 挂起写入（树冠等）随数据一起入队，由主线程按帧预算重放
                 if (data.GetPendingBlocks().Count > 0)
                     _pendingSetBlocksQueue.Enqueue(data.GetPendingBlocks());
-                // 地物 tile（豌豆丛跨 chunk）入平行队列，主线程按帧预算路由到目标 chunk
+                // 地物 tile（豌豆丛跨 chunk，含采收基因）入平行队列，主线程按帧预算路由到目标 chunk
                 var tileWrites = data.GetPendingTileWrites();
                 if (tileWrites.Length > 0)
-                    _pendingTileWritesQueue.Enqueue(new List<(BlockPosInWorld, Genome)>(tileWrites));
+                    _pendingTileWritesQueue.Enqueue(new List<(BlockPosInWorld, Genome, HarvestGenome)>(tileWrites));
             }
             catch (Exception ex)
             {

@@ -131,4 +131,7 @@ public class World : MonoBehaviour
     public bool SetTile(BlockPosInWorld pos, PeaTileData tile) => store.SetTile(pos, tile);
     public bool RemoveTile(BlockPosInWorld pos) => store.RemoveTile(pos);
     public PeaTileData GetTile(BlockPosInWorld pos) => store.GetTile(pos);
+
+    // 方块更新中心（采收回退/枯萎转换等逻辑层 API 入口，BlockInteraction 采收用）
+    public BlockUpdateCenter BlockUpdateCenter => blockUpdateCenter;
 }

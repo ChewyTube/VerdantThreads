@@ -244,6 +244,54 @@ public class BlockUpdateCenter
         }
     }
 
+    // ---- Phase 2 采收：逻辑层公开 API（供 BlockInteraction 采收调用）----
+
+    // 采收后回退阶段 2（阶段 3/4 → 2）：底部格退回 + 上方中部/顶部格阶段同步（复用 SyncUpperStage）。
+    // tile 保留（基因/采收次数仍在 tile 上，可继续生长再采收）。
+    public void RevertToStage2(BlockPosInWorld bottomPos)
+    {
+        if (!TryReadBlock(bottomPos, out Block bottom)) return; // chunk 未加载跳过
+        if (bottom.GetBlockType() != BlockType.PeaStem) return;  // 防御：非豌豆底部格
+        store.SetBlock(bottom.WithStage(2), bottomPos);
+        SyncUpperStage(bottomPos, 2);
+    }
+
+    // 采收次数耗尽 → 整株枯萎：底部/中部/顶部格全部变 PeaWithered + 移除 tile（基因/采收次数一并删除）。
+    // TallMask 契约：高茎株底部格也设置 TallMask（中/顶格原本就有）——枯萎株无 tile，
+    // 网格构建器统一用 IsTallPlant() 判定高矮（见 ChunkMeshBuilder PeaWithered 分支）。
+    public void WitherPeaPlant(BlockPosInWorld bottomPos)
+    {
+        if (!TryReadBlock(bottomPos, out Block bottom)) return; // chunk 未加载跳过
+        if (bottom.GetBlockType() != BlockType.PeaStem) return;  // 防御：非豌豆底部格
+        PeaTileData tile = store.GetTile(bottomPos);
+        bool tall = tile != null && PeaTextures.IsTall(tile.Genome);
+        store.RemoveTile(bottomPos); // tile 随枯萎移除
+        store.SetBlock(BlockRegistry.PeaWithered.WithTall(tall), bottomPos); // 底部格：TallMask 契约
+        if (tall)
+        {
+            // 高茎：y+1 中部 + y+2 顶部（中/顶格原本带 TallMask）
+            if (TryReadBlock(new BlockPosInWorld(bottomPos.X, bottomPos.Y + 1, bottomPos.Z), out Block mid) &&
+                mid.GetBlockType() == BlockType.PeaPlantMiddle)
+            {
+                store.SetBlock(BlockRegistry.PeaWithered.WithTall(true), new BlockPosInWorld(bottomPos.X, bottomPos.Y + 1, bottomPos.Z));
+            }
+            if (TryReadBlock(new BlockPosInWorld(bottomPos.X, bottomPos.Y + 2, bottomPos.Z), out Block top) &&
+                top.GetBlockType() == BlockType.PeaPlantTop)
+            {
+                store.SetBlock(BlockRegistry.PeaWithered.WithTall(true), new BlockPosInWorld(bottomPos.X, bottomPos.Y + 2, bottomPos.Z));
+            }
+        }
+        else
+        {
+            // 矮茎：y+1 顶部
+            if (TryReadBlock(new BlockPosInWorld(bottomPos.X, bottomPos.Y + 1, bottomPos.Z), out Block top) &&
+                top.GetBlockType() == BlockType.PeaPlantTop)
+            {
+                store.SetBlock(BlockRegistry.PeaWithered.WithTall(false), new BlockPosInWorld(bottomPos.X, bottomPos.Y + 1, bottomPos.Z));
+            }
+        }
+    }
+
     // ---- Step B：方块更新通知与联动分派 ----
 
     // ChunkStore.SetBlock 写入成功后回调（订阅 store.OnBlockWritten）：本位置 + 6 邻居分派联动。
@@ -357,6 +405,41 @@ public class BlockUpdateCenter
                             {
                                 store.SetBlock(bottom.WithStage(0), new BlockPosInWorld(pos.X, pos.Y - 2, pos.Z));
                             }
+                        }
+                    }
+                }
+                break;
+            }
+            case BlockType.PeaWithered:
+            {
+                // 枯萎格被破坏 → 联动清除同株其余枯萎格（整株消失；枯萎株无 tile 无掉落）。
+                // 下方非枯萎 = 底部格：清上方（y+1 枯萎格；若为高茎中部格再清 y+2 顶部格）；
+                // 下方枯萎 = 中部/顶部格：清下方（y-1 枯萎格；若为高茎中部格再清 y-2 底部格）
+                if (source == BlockUpdateSource.Break)
+                {
+                    if (!TryReadBlock(new BlockPosInWorld(pos.X, pos.Y - 1, pos.Z), out Block below) ||
+                        below.GetBlockType() != BlockType.PeaWithered)
+                    {
+                        // 底部格被破坏：清上方
+                        if (TryReadBlock(new BlockPosInWorld(pos.X, pos.Y + 1, pos.Z), out Block above) &&
+                            above.GetBlockType() == BlockType.PeaWithered)
+                        {
+                            store.SetBlock(BlockRegistry.Air, new BlockPosInWorld(pos.X, pos.Y + 1, pos.Z));
+                            if (TryReadBlock(new BlockPosInWorld(pos.X, pos.Y + 2, pos.Z), out Block top) &&
+                                top.GetBlockType() == BlockType.PeaWithered)
+                            {
+                                store.SetBlock(BlockRegistry.Air, new BlockPosInWorld(pos.X, pos.Y + 2, pos.Z));
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // 中部/顶部格被破坏：清下方
+                        store.SetBlock(BlockRegistry.Air, new BlockPosInWorld(pos.X, pos.Y - 1, pos.Z));
+                        if (TryReadBlock(new BlockPosInWorld(pos.X, pos.Y - 2, pos.Z), out Block bottom) &&
+                            bottom.GetBlockType() == BlockType.PeaWithered)
+                        {
+                            store.SetBlock(BlockRegistry.Air, new BlockPosInWorld(pos.X, pos.Y - 2, pos.Z));
                         }
                     }
                 }

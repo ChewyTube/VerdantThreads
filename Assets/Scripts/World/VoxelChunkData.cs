@@ -15,8 +15,8 @@ public class VoxelChunkData
 
     // 生成期地物产出的 tile（豌豆丛）：后台生成线程写入，主线程按世界坐标路由到目标 chunk（跨 chunk 重试）。
     // 与 pendingBlocks 平行：块走 Setblock → pendingBlocks、tile 走本通道，两条路在目标 chunk 汇合。
-    // 纯值元组（BlockPosInWorld, Genome）跨线程安全。
-    private readonly List<(BlockPosInWorld, Genome)> pendingTileWrites = new List<(BlockPosInWorld, Genome)>();
+    // 纯值元组（BlockPosInWorld, Genome, HarvestGenome）跨线程安全（第三项为采收基因，Phase 2 多基因数量性状）。
+    private readonly List<(BlockPosInWorld, Genome, HarvestGenome)> pendingTileWrites = new List<(BlockPosInWorld, Genome, HarvestGenome)>();
 
     public VoxelChunkData(Block[,,] blocks, VCPosInWorld pos, List<(BlockPosInWorld, Block)> pendingBlocks, bool fillAir = true)
     {
@@ -77,14 +77,14 @@ public class VoxelChunkData
         return loadedTiles;
     }
 
-    // 后台线程调用：登记一个豌豆 tile（世代 0、生长时间 0 = 阶段 0 苗）
-    public void AddPendingTileWrite(BlockPosInWorld pos, Genome genome)
+    // 后台线程调用：登记一个豌豆 tile（世代 0、生长时间 0 = 阶段 0 苗；采收基因随株确定性派生/随机）
+    public void AddPendingTileWrite(BlockPosInWorld pos, Genome genome, HarvestGenome harvestGenome)
     {
-        pendingTileWrites.Add((pos, genome));
+        pendingTileWrites.Add((pos, genome, harvestGenome));
     }
 
     // 主线程消费：返回全部待路由 tile 记录
-    public (BlockPosInWorld, Genome)[] GetPendingTileWrites()
+    public (BlockPosInWorld, Genome, HarvestGenome)[] GetPendingTileWrites()
     {
         return pendingTileWrites.ToArray();
     }

@@ -65,5 +65,17 @@ public class ItemInstance
         GenotypeTags = new List<string>();
     }
 
+    // 显式表型标签构造（无基因物品，如青嫩豆荚：标签来自位点子集 PeaTraits.GetPhenotypeTags(genome, loci)，
+    // 作为堆叠分组依据；非豌豆物品传空列表）
+    public ItemInstance(ItemType itemType, string displayName, IEnumerable<string> phenotypeTags)
+    {
+        ItemType = itemType;
+        DisplayName = displayName;
+        PlaceableBlockType = null;
+        Genome = null;
+        PhenotypeTags = new List<string>(phenotypeTags);
+        GenotypeTags = new List<string>();
+    }
+
     public override string ToString() => DisplayName;
 }

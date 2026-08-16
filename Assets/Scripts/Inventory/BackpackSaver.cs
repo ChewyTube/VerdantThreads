@@ -164,26 +164,30 @@ public static class BackpackSaver
             genotypeCounts[g] = gc;
         }
 
-        // 表型 / 基因型标签（仅冗余备份；重建物品时按需使用）
+        // 表型 / 基因型标签（无基因物品的表型标签是堆叠分组依据，必须读回——青嫩豆荚等，见 HARVEST_SYSTEM.md §2.2）
         int phenotypeCount = reader.ReadInt32();
         if (phenotypeCount < 0 || phenotypeCount > 64) return null;
-        for (int i = 0; i < phenotypeCount; i++) reader.ReadString();
+        var phenotypeTags = new List<string>(phenotypeCount);
+        for (int i = 0; i < phenotypeCount; i++) phenotypeTags.Add(reader.ReadString());
         int genotypeTagCount = reader.ReadInt32();
         if (genotypeTagCount < 0 || genotypeTagCount > 64) return null;
         for (int i = 0; i < genotypeTagCount; i++) reader.ReadString();
 
-        // 种子袋内容
+        // 种子袋内容（仅 SeedBag 物品写入条目数，与 WriteSlot 对齐——非种子袋槽不读该字段）
         bool isSeedBag = reader.ReadBoolean();
-        int seedBagEntryCount = reader.ReadInt32();
-        if (seedBagEntryCount < 0 || seedBagEntryCount > Constants.SEED_BAG_CAPACITY) return null;
-        var seedBagGenomes = new Dictionary<Genome, int>(seedBagEntryCount);
-        for (int i = 0; i < seedBagEntryCount; i++)
+        var seedBagGenomes = new Dictionary<Genome, int>();
+        if (isSeedBag)
         {
-            uint gv = reader.ReadUInt32();
-            int gc = reader.ReadInt32();
-            if (gc <= 0) continue;
-            var g = new Genome(gv);
-            seedBagGenomes[g] = gc;
+            int seedBagEntryCount = reader.ReadInt32();
+            if (seedBagEntryCount < 0 || seedBagEntryCount > Constants.SEED_BAG_CAPACITY) return null;
+            for (int i = 0; i < seedBagEntryCount; i++)
+            {
+                uint gv = reader.ReadUInt32();
+                int gc = reader.ReadInt32();
+                if (gc <= 0) continue;
+                var g = new Genome(gv);
+                seedBagGenomes[g] = gc;
+            }
         }
 
         // HTT 载荷段（v2 新增）：int payloadLen + 字节；v1 旧档无此段，直接跳过（Payload = null）
@@ -203,7 +207,8 @@ public static class BackpackSaver
         // 重建物品：
         //   SeedBag → 非方块构造 + 逐个 TryAdd 读回的袋内豌豆
         //   携带基因 → genome 构造器（自动重算表型标签，与存档时一致）
-        //   可放置 → 方块构造；其余 → 非方块构造
+        //   可放置 → 方块构造；其余 → 非方块构造（无基因物品回填读回的表型标签——
+        //     青嫩豆荚等显式标签物品重启后堆叠分组依赖它，见 HARVEST_SYSTEM.md §2.2）
         ItemInstance item;
         if (itemType == ItemType.SeedBag)
         {
@@ -217,6 +222,11 @@ public static class BackpackSaver
         else if (placeable.HasValue)
         {
             item = new ItemInstance(itemType, displayName, placeable.Value);
+        }
+        else if (phenotypeTags.Count > 0)
+        {
+            // 无基因但带显式表型标签（青嫩豆荚）：显式标签构造器重建，堆叠分组与存档时一致
+            item = new ItemInstance(itemType, displayName, phenotypeTags);
         }
         else
         {

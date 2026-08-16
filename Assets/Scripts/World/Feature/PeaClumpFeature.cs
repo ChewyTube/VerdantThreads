@@ -4,6 +4,7 @@ using System.Collections.Generic;
 // 豌豆丛生地物：一丛豌豆（14-18 株）在中心周围半径内聚集，模拟真实丛生/分蘖形态。
 // 整丛共享一个母本基因（丛中心世界坐标哈希派生，28 bit），每株再叠加株坐标哈希驱动的
 // 确定性微变异（1-2 个等位基因位 0↔1 翻转），丛内高度相似但不完全相同。
+// 采收基因（HarvestGenome，Phase 2 多基因数量性状）同样由株坐标哈希全 32 位确定性派生。
 // 契约：全部确定性哈希（严禁 System.Random/Genome.Random()，时间种子非确定 + 共享静态源
 // 后台多线程不安全）；每株独立 Air 检查（树先放、丛后放，靠 Air 检查避让树干/树冠）；
 // 跨 chunk 株：块走 data.Setblock → pendingBlocks、tile 走 AddPendingTileWrite →
@@ -88,6 +89,8 @@ public class PeaClumpFeature : Feature
             return; // 本 chunk 内格已被占（树干/树冠/其他）→ 不放
 
         data.Setblock(BlockRegistry.GetBlock(BlockType.PeaStem), relX, relY, relZ); // 跨 chunk 自动进 pendingBlocks
-        data.AddPendingTileWrite(new BlockPosInWorld(plantBX, plantY, plantBZ), genome);
+        // 采收基因：株坐标哈希全 32 位（8 位点 × 4 bit 恰好占满），确定性（严禁 System.Random，契约见文件头）
+        HarvestGenome harvestGenome = new HarvestGenome(plantHash);
+        data.AddPendingTileWrite(new BlockPosInWorld(plantBX, plantY, plantBZ), genome, harvestGenome);
     }
 }

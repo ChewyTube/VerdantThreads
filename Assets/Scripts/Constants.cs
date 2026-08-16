@@ -24,6 +24,14 @@ public static class Constants
     public const float PEA_GROWTH_ADVANCE_CHANCE = 1f / 3f;      // 随机刻命中时的阶段推进概率（MC 小麦同款）
     // 期望节奏：单阶段 ≈ 4096 / (3 × 20) / (1/3) ≈ 205s；三阶段全熟 ≈ 10 分钟（可调，嫌快/慢改上面两个常量）
 
+    // ---- 豌豆采收（Phase 2：8 新基因 HarvestGenome 多基因数量性状，见 HARVEST_SYSTEM.md §5.2）----
+    public const int HARVEST_LIMIT_BASE_EXPONENT = 1; // 采摘次数上限 = min(2^(1+k), CAP)，k = 纯合显性位点数
+    public const int HARVEST_LIMIT_CAP = 64;          // 采摘次数上限封顶
+    public const int YIELD_BASE_STAGE4 = 12;          // 阶段 4 豌豆荚基础产量
+    public const int YIELD_PER_DOMINANT_STAGE4 = 2;   // 阶段 4 每纯合显性位点产量加成
+    public const int YIELD_BASE_STAGE3 = 3;           // 阶段 3 青嫩豆荚基础产量
+    public const int YIELD_PER_DOMINANT_STAGE3 = 1;   // 阶段 3 每纯合显性位点产量加成
+
     // ---- 方块更新机制 ----
     public const int MAX_BLOCK_UPDATE_DEPTH = 256;      // 方块更新递归通知深度上限（防环：破坏联动等递归写入链）
     public const int MAX_GAME_TICKS_PER_FRAME = 5;     // 单帧游戏 tick 追赶上限（=250ms；超限丢弃积压，防止长帧连锁放大卡顿）

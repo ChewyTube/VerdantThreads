@@ -217,6 +217,37 @@ public static class ChunkMeshBuilder
                         meshData.AddPeaQuadCell(xw, yw, zw, cell, rot);
                         continue;
                     }
+                    // 枯萎豌豆（采收次数耗尽后整株枯萎）：十字面片，贴图随高矮（列 8 枯萎贴图，用户绘制）。
+                    // 枯萎株移除 tile（基因随 tile 一起删除），高矮由方块状态位 TallMask 判定（Step 4 契约：
+                    // 枯萎转换时高茎株底部格也设置 TallMask；中/顶格原本就有）。
+                    // 格位判定：下方非枯萎 = 底部格；下方枯萎且上方非枯萎 = 顶部格；上下皆枯萎 = 中部格（仅高茎）
+                    if (bt == BlockType.PeaWithered)
+                    {
+                        int xw = x + d.Pos.X * s, yw = y + d.Pos.Y * s, zw = z + d.Pos.Z * s;
+                        bool tall = d.Blocks[x, y, z].IsTallPlant();
+                        Vector2Int cell;
+                        int rot;
+                        if (!IsWitheredBelow(d, x, y, z))
+                        {
+                            // 底部格：与 PeaStem 同 hash（自身世界坐标）→ 同株同朝向
+                            cell = tall ? PeaTextures.WitheredTallBottomCell : PeaTextures.WitheredShortBottomCell;
+                            rot = TextureRotation.GetRotation(d.Seed, xw, yw, zw);
+                        }
+                        else if (IsWitheredAbove(d, x, y, z))
+                        {
+                            // 中部格（仅高茎三格株存在）：与底部格同 hash（yw-1）
+                            cell = PeaTextures.WitheredTallMiddleCell;
+                            rot = TextureRotation.GetRotation(d.Seed, xw, yw - 1, zw);
+                        }
+                        else
+                        {
+                            // 顶部格：与底部格同 hash（高茎 yw-2、矮茎 yw-1）
+                            cell = tall ? PeaTextures.WitheredTallTopCell : PeaTextures.WitheredShortTopCell;
+                            rot = TextureRotation.GetRotation(d.Seed, xw, yw - (tall ? 2 : 1), zw);
+                        }
+                        meshData.AddPeaQuadCell(xw, yw, zw, cell, rot);
+                        continue;
+                    }
                     if (bt != BlockType.Air && bt != BlockType.Void)
                     {
                         TryAddFace(meshData, d, x, y, z, Direction.Up);
@@ -228,6 +259,23 @@ public static class ChunkMeshBuilder
                     }
                 }
         return meshData;
+    }
+
+    // 枯萎株格位判定辅助：下方是否为枯萎格（y==0 跨 chunk 查 BorderDown 边界面 [x,z]；邻居未加载 → 视为非枯萎）
+    private static bool IsWitheredBelow(MeshBuildData d, int x, int y, int z)
+    {
+        if (y > 0) return d.Blocks[x, y - 1, z].GetBlockType() == BlockType.PeaWithered;
+        var plane = d.BorderDown;
+        return plane != null && plane[x, z] == BlockType.PeaWithered;
+    }
+
+    // 上方是否为枯萎格（y==15 跨 chunk 查 BorderUp 边界面 [x,z]；邻居未加载 → 视为非枯萎）
+    private static bool IsWitheredAbove(MeshBuildData d, int x, int y, int z)
+    {
+        int s = Constants.CHUNK_SIZE;
+        if (y < s - 1) return d.Blocks[x, y + 1, z].GetBlockType() == BlockType.PeaWithered;
+        var plane = d.BorderUp;
+        return plane != null && plane[x, z] == BlockType.PeaWithered;
     }
 
     private static void TryAddFace(MeshData meshData, MeshBuildData d, int x, int y, int z, Direction dir)
@@ -298,6 +346,7 @@ public static class ChunkMeshBuilder
         if (bt == BlockType.PeaStem || neighborBt == BlockType.PeaStem) return false;
         if (bt == BlockType.PeaPlantTop || neighborBt == BlockType.PeaPlantTop) return false;
         if (bt == BlockType.PeaPlantMiddle || neighborBt == BlockType.PeaPlantMiddle) return false;
+        if (bt == BlockType.PeaWithered || neighborBt == BlockType.PeaWithered) return false;
 
         return true;
     }

@@ -12,7 +12,7 @@
 | 0 | 最小苗 | 不可采，OnGUI 提示「未成熟」 | — | — |
 | 1 | 苗 | 不可采，OnGUI 提示「未成熟」 | — | — |
 | 2 | 植株（已长出 2/3 格高） | 不可采，OnGUI 提示「未成熟」 | — | — |
-| 3 | 开花 | **青嫩豆荚** | 3~7 个（按基因） | 无基因（未定型），不可种植 |
+| 3 | 开花 | **青嫩豆荚** | 3~11 个（按基因，3+k） | 无基因（未定型），不可种植 |
 | 4 | 结果 | **豌豆荚** | 12~20 个（按基因） | 读 tile `PeaTileData.Genome`（母本基因） |
 
 ### 1.1 采收后植株状态
@@ -152,13 +152,13 @@ ItemType {
 - `Genetics/PeaHarvestCalculator.cs`（新建）：次数 `min(2^(1+k), 64)`；产量 阶段4 `12+2k` / 阶段3 `3+k`（k = 纯合显性数）
 - `Constants`：产量/次数公式常量
 - `Block.HarvestMask = 0x7F`（bit20-26）+ `WithHarvests(int)`/`GetHarvests()`（0=未初始化）
-- `PeaTrait.GetPhenotypeTags(Genome, params int[] loci)` 位点子集重载（青嫩豆荚取 {2,5}）+ `ItemInstance` 显式表型标签构造器（无基因）
-- `BlockUpdateCenter`：公开 `RevertToStage2(bottomPos)`（复用 `SyncUpperStage`）；`PeaWithered` 破坏联动（破坏任一格 → 清除同株其余枯萎格）
-- `Block.cs`/`BlockRegistry`：`PeaWithered = 11` 注册；**贴图先占位**（复用豌豆底格 tile），玩家跑 `main.py` 生成后替换
-- `ChunkMeshBuilder`：`PeaWithered` 十字面片分支 + `ShouldBeEliminated` 不剔除名单
-- `BlockInteraction` 右键拦截采收：命中豌豆（含中段/顶端向下找底部）→ 阶段 <3 提示「未成熟」→ 阶段 3/4 按公式产出入背包（`AddItem` 自动堆叠）→ 次数 -1 → 归 0 则整株变 `PeaWithered`（移除 tile），否则回退阶段 2 + 同步上部 + mesh 重建
+- `PeaTrait.GetPhenotypeTags(Genome, params int[] loci)` 位点子集重载（青嫩豆荚取 {2,5}）+ `ItemInstance` 显式表型标签构造器（无基因）✅（2026-08-16）
+- `BlockUpdateCenter`：公开 `RevertToStage2(bottomPos)`（复用 `SyncUpperStage`）+ `WitherPeaPlant(bottomPos)`（整株变枯萎 + 移除 tile，**TallMask 契约在此实现**：高茎株底部格也设置 TallMask，中/顶格原本就有——枯萎株无 tile，网格构建器统一用 `IsTallPlant()` 判定高矮）；`PeaWithered` 破坏联动（破坏任一格 → 清除同株其余枯萎格）✅（2026-08-16）
+- `Block.cs`/`BlockRegistry`：`PeaWithered = 11` 注册 ✅；枯萎贴图列 8 已由用户绘制（`main.py` 已生成，无需占位）
+- `ChunkMeshBuilder`：`PeaWithered` 十字面片分支 + `ShouldBeEliminated` 不剔除名单 ✅（2026-08-16）
+- `BlockInteraction` 右键拦截采收：命中豌豆（含中段/顶端向下找底部）→ 阶段 <3 提示「未成熟」→ 阶段 3/4 按公式产出入背包（`AddItem` 自动堆叠）→ 次数 -1 → 归 0 则调用 `BlockUpdateCenter.WitherPeaPlant(bottomPos)`（整株变 `PeaWithered` + 移除 tile），否则调用 `RevertToStage2(bottomPos)` 回退阶段 2 + mesh 重建 ✅（2026-08-16；`World.BlockUpdateCenter` 公开访问器一并添加）
 - 种植/自然生成：随机 `Genome` + `HarvestGenome`（`PeaClumpFeature` 通道扩展）
-- 修复 `BackpackSaver` 读档丢弃无基因物品表型标签的缺口（青嫩豆荚重启后堆叠分组失效）
+- 修复 `BackpackSaver` 读档丢弃无基因物品表型标签的缺口（青嫩豆荚重启后堆叠分组失效）✅（2026-08-16）
 
 ### Phase 3 — 分解（后置）
 - 合成窗口 / 手持右键分解豌豆荚

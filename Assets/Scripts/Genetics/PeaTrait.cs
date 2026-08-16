@@ -52,4 +52,14 @@ public static class PeaTraits
             tags[i] = genome.IsDominant(i) ? All[i].DominantPhenotype : All[i].RecessivePhenotype;
         return tags;
     }
+
+    // 位点子集重载：只取指定位点的表型标签（青嫩豆荚取 {2,5} 花色+花位置，见 HARVEST_SYSTEM.md §2.2）。
+    // 调用方必须传有效位点（越界抛异常——与全量版直接索引 All 一致）
+    public static string[] GetPhenotypeTags(Genome genome, params int[] loci)
+    {
+        var tags = new string[loci.Length];
+        for (int i = 0; i < loci.Length; i++)
+            tags[i] = genome.IsDominant(loci[i]) ? All[loci[i]].DominantPhenotype : All[loci[i]].RecessivePhenotype;
+        return tags;
+    }
 }

@@ -40,10 +40,10 @@ public class BlockInteraction : MonoBehaviour
             TryBreakBlock();
         }
 
-        // 鼠标右键：在命中面外侧放置选中物品对应方块
+        // 鼠标右键：优先拦截豌豆采收；未命中豌豆再走放置
         if (Input.GetMouseButtonDown(1))
         {
-            TryPlaceBlock();
+            if (!TryHarvestPea()) TryPlaceBlock();
         }
     }
 
@@ -106,10 +106,87 @@ public class BlockInteraction : MonoBehaviour
             // 种植联动：豌豆种子放置 → 创建 tile 记录基因/世代/生长进度（生长 tick 据此推进阶段）
             if (current.ItemType == ItemType.PeaSeedBlock)
             {
-                world.SetTile(placePos, new PeaTileData(current.Genome ?? Genome.Random(), 0));
+                var tile = new PeaTileData(current.Genome ?? Genome.Random(), 0);
+                tile.SetHarvestGenome(HarvestGenome.Random()); // 采收基因随机（玩家种植，非生成确定性契约）
+                world.SetTile(placePos, tile);
             }
         }
         RequestMeshRebuildAround(placePos);
+    }
+
+    // 右键采收：命中豌豆（底部/中部/顶部格）→ 按阶段产出豆荚入背包并扣减采摘次数。
+    // 返回 true 表示本次右键已被采收消费（不再走放置逻辑）。
+    // 流程：向下找底部格 → 阶段 <3 提示未成熟 → 阶段 3/4 按公式产出（青嫩豆荚无基因 /
+    // 豌豆荚携带母本基因组 + 采收基因 HTT 载荷）→ 次数 -1（未初始化先按公式初始化）→
+    // 归 0 整株枯萎（WitherPeaPlant），否则回退阶段 2（RevertToStage2）+ mesh 重建
+    private bool TryHarvestPea()
+    {
+        if (!RaycastVoxel(out BlockPosInWorld hit, out _)) return false;
+
+        Block hitBlock = GetBlockAt(hit);
+        BlockType hitType = hitBlock.GetBlockType();
+        if (hitType != BlockType.PeaStem && hitType != BlockType.PeaPlantMiddle && hitType != BlockType.PeaPlantTop)
+            return false;
+
+        // 向下找底部格：穿过 PeaPlantTop/PeaPlantMiddle 直到 PeaStem
+        BlockPosInWorld bottomPos = hit;
+        while (true)
+        {
+            Block below = GetBlockAt(new BlockPosInWorld(bottomPos.X, bottomPos.Y - 1, bottomPos.Z));
+            BlockType belowType = below.GetBlockType();
+            if (belowType != BlockType.PeaStem && belowType != BlockType.PeaPlantMiddle) break;
+            bottomPos = new BlockPosInWorld(bottomPos.X, bottomPos.Y - 1, bottomPos.Z);
+        }
+        Block bottomBlock = GetBlockAt(bottomPos);
+        if (bottomBlock.GetBlockType() != BlockType.PeaStem) return true; // 结构异常（防御），已消费右键
+
+        int stage = (int)(bottomBlock.GetBlockState() & BlockBits.StageMask);
+        if (stage < 3)
+        {
+            Debug.Log("豌豆尚未成熟，无法采收"); // 未成熟提示（项目无 UI 消息系统，走日志）
+            return true;
+        }
+
+        // tile 必须存在（阶段≥3 植株必有；缺失防御：不采收，避免空引用）
+        PeaTileData tile = world.GetTile(bottomPos);
+        if (tile == null) return true;
+
+        Genome genome = tile.Genome;
+        HarvestGenome harvestGenome = tile.GetHarvestGenome(); // 无载荷 → 默认（全隐性，k=0 基线）
+
+        // 产出：阶段 4 豌豆荚（携带母本基因组 + 采收基因 HTT 载荷）；阶段 3 青嫩豆荚
+        // （无基因，表型标签取花色+花位置位点 {2,5}，见 HARVEST_SYSTEM.md §2.2）
+        int yield = PeaHarvestCalculator.GetYield(harvestGenome, stage);
+        ItemInstance item;
+        if (stage >= 4)
+        {
+            item = new ItemInstance(ItemType.PeaPod, "豌豆荚", genome);
+            item.PhenotypeTags.Clear();
+            item.PhenotypeTags.AddRange(PeaTraits.GetPhenotypeTags(genome, 3, 4));
+            item.Payload = new HTTCompound();
+            item.Payload.SetInt("harvestGenome", (int)harvestGenome.Value);
+        }
+        else
+        {
+            item = new ItemInstance(ItemType.GreenBeanPod, "青嫩豆荚", PeaTraits.GetPhenotypeTags(genome, 2, 5));
+        }
+        world.Backpack.AddItem(item, yield);
+
+        // 扣减采摘次数：未初始化（0）→ 按公式初始化上限；归 0 → 整株枯萎，否则回退阶段 2
+        int harvests = bottomBlock.GetHarvests();
+        if (harvests <= 0) harvests = PeaHarvestCalculator.GetHarvestLimit(harvestGenome);
+        harvests--;
+        if (harvests <= 0)
+        {
+            world.BlockUpdateCenter.WitherPeaPlant(bottomPos);
+        }
+        else
+        {
+            world.SetBlock(bottomBlock.WithHarvests(harvests), bottomPos);
+            world.BlockUpdateCenter.RevertToStage2(bottomPos);
+        }
+        RequestMeshRebuildAround(bottomPos);
+        return true;
     }
 
     // 体素射线检测（Amanatides-Woo DDA 网格步进）：返回命中块世界坐标与进入面法线
