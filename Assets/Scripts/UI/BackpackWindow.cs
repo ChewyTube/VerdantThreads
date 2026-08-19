@@ -7,6 +7,9 @@ public class BackpackWindow : MonoBehaviour
 {
     private Backpack backpack;
 
+    // 拖拽交换状态：左键按下的源槽索引；-1 = 未拖拽
+    private int dragFromIndex = -1;
+
     // 装配注入：由 World 在 Awake 中创建并调用（保证先于首次 OnGUI）
     public void Init(Backpack backpack)
     {
@@ -21,7 +24,11 @@ public class BackpackWindow : MonoBehaviour
         if (Input.GetKeyDown(Constants.BACKPACK_TOGGLE_KEY))
         {
             backpack.BackpackOpen = !backpack.BackpackOpen;
-            if (!backpack.BackpackOpen) backpack.IsSeedBagOpen = false; // 关闭背包时同步关闭种子袋内容子面板
+            if (!backpack.BackpackOpen)
+            {
+                backpack.IsSeedBagOpen = false; // 关闭背包时同步关闭种子袋内容子面板
+                dragFromIndex = -1;             // 关闭时重置拖拽状态
+            }
         }
 
         // ESC 关闭背包（含种子袋内容子面板；种子袋仅在背包开启时可见，一并关闭）
@@ -29,6 +36,7 @@ public class BackpackWindow : MonoBehaviour
         {
             backpack.BackpackOpen = false;
             backpack.IsSeedBagOpen = false;
+            dragFromIndex = -1; // 关闭时重置拖拽状态
         }
 
         // 同步鼠标锁定状态：界面打开（背包窗 / 种子袋面板）时解锁并显示鼠标，否则锁定隐藏。
@@ -108,10 +116,30 @@ public class BackpackWindow : MonoBehaviour
                 break; // 槽可能已移除，行号已失效，下一帧重绘
             }
 
-            // 当前选中行高亮；整行可点击 → 选中该物品（热栏同步读同一 SelectedIndex，无需额外通知）
-            GUI.backgroundColor = i == backpack.SelectedIndex
-                ? new Color(1f, 0.85f, 0.25f, 0.85f)
-                : Color.white;
+            // 左键拖拽交换：按下记录源槽并选中，松开落在另一行则交换（拖到空白处取消）。
+            // 放在右键检测之后、GUI.Button 之前，避免按钮吞掉拖拽事件。
+            if (Event.current.type == EventType.MouseDown && Event.current.button == 0 &&
+                rowRect.Contains(Event.current.mousePosition))
+            {
+                backpack.Select(i);
+                dragFromIndex = i;
+                Event.current.Use();
+            }
+            else if (Event.current.type == EventType.MouseUp && Event.current.button == 0 &&
+                dragFromIndex >= 0 && rowRect.Contains(Event.current.mousePosition))
+            {
+                if (dragFromIndex != i) backpack.SwapSlots(dragFromIndex, i);
+                dragFromIndex = -1;
+                Event.current.Use();
+            }
+
+            // 当前选中行高亮；拖拽源行蓝色高亮；整行可点击 → 选中该物品（热栏同步读同一 SelectedIndex，无需额外通知）
+            if (i == backpack.SelectedIndex)
+                GUI.backgroundColor = new Color(1f, 0.85f, 0.25f, 0.85f);
+            else if (i == dragFromIndex)
+                GUI.backgroundColor = new Color(0.5f, 0.75f, 1f, 0.8f);
+            else
+                GUI.backgroundColor = Color.white;
             if (GUI.Button(rowRect, GUIContent.none))
             {
                 backpack.Select(i);
@@ -132,6 +160,13 @@ public class BackpackWindow : MonoBehaviour
             GUI.Label(
                 new Rect(rowRect.x + rowRect.height + 6f, rowRect.y + 6f, rowRect.width - rowRect.height - 12f, 22f),
                 label);
+        }
+
+        // 拖拽兜底：MouseUp 未落在任何行（空白/窗外）→ 取消拖拽，不交换
+        if (Event.current.type == EventType.MouseUp && Event.current.button == 0 && dragFromIndex >= 0)
+        {
+            dragFromIndex = -1;
+            Event.current.Use();
         }
 
         // 种子袋内容子面板（覆盖在背包窗右侧）：数据源 = 种子袋物品的 SeedBag.Peas（按基因型分组计数）。

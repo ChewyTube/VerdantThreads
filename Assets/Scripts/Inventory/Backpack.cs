@@ -71,6 +71,20 @@ public class Backpack
         SelectedIndex = Mathf.Clamp(index, 0, slots.Count - 1);
     }
 
+    // 交换两个槽的位置（背包整理 / 把物品移到热栏范围用）。
+    // 选中索引跟随被拖物品：若选中槽参与交换，更新到物品新位置。
+    public void SwapSlots(int a, int b)
+    {
+        if (a < 0 || a >= slots.Count || b < 0 || b >= slots.Count || a == b) return;
+        StackSlot tmp = slots[a];
+        slots[a] = slots[b];
+        slots[b] = tmp;
+
+        // 选中索引跟随物品：选中槽参与交换时更新到物品新位置
+        if (SelectedIndex == a) SelectedIndex = b;
+        else if (SelectedIndex == b) SelectedIndex = a;
+    }
+
     // 槽内堆叠数量（越界 / 空槽返回 0）
     public int GetStackCount(int index)
     {
