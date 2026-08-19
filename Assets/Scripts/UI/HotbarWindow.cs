@@ -124,7 +124,7 @@ public class HotbarWindow : MonoBehaviour
                 ItemType.PeaPod when item.Genome.HasValue => PeaTextures.GetItemPodCell(item.Genome.Value),
                 ItemType.PeaPod => new Vector2Int(0, 0),        // 无基因兜底（占位）
                 ItemType.SeedBag => PeaTextures.ItemSeedBagCell,
-                ItemType.GreenBeanPod => new Vector2Int(0, 0),  // 占位，后续更换
+                ItemType.GreenBeanPod => PeaTextures.ItemGreenBeanPodCell,
                 _ => new Vector2Int(0, 0),
             };
         }

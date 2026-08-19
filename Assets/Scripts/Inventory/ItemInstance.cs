@@ -30,6 +30,12 @@ public class ItemInstance
     // 序列化/反序列化均在主线程进行（见 HTTSerializer / docs/design/HTT.md）
     public HTTCompound Payload { get; set; }
 
+    // 读取采收基因组：无载荷/缺键 → default（0 = 全隐性）。与 PeaTileData.GetHarvestGenome 同语义。
+    public HarvestGenome GetHarvestGenome()
+    {
+        return Payload != null ? new HarvestGenome((uint)Payload.GetInt("harvestGenome")) : default;
+    }
+
     // 可放置方块物品构造：绑定对应 BlockType
     public ItemInstance(ItemType itemType, string displayName, BlockType placeableBlockType)
     {
@@ -59,6 +65,18 @@ public class ItemInstance
         ItemType = itemType;
         DisplayName = displayName;
         PlaceableBlockType = null;
+        Genome = genome;
+        PhenotypeTags = new List<string>();
+        PhenotypeTags.AddRange(PeaTraits.GetPhenotypeTags(genome));
+        GenotypeTags = new List<string>();
+    }
+
+    // 携带基因的可放置方块物品构造（豌豆粒等）：自动填表型标签，兼有 PlaceableBlockType
+    public ItemInstance(ItemType itemType, string displayName, Genome genome, BlockType placeableBlockType)
+    {
+        ItemType = itemType;
+        DisplayName = displayName;
+        PlaceableBlockType = placeableBlockType;
         Genome = genome;
         PhenotypeTags = new List<string>();
         PhenotypeTags.AddRange(PeaTraits.GetPhenotypeTags(genome));

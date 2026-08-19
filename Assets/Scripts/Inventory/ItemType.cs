@@ -9,7 +9,7 @@ public enum ItemType
     LeavesBlock,
     BedrockBlock,
     PeaSeedBlock,    // 豌豆种子（背包第7格，可放置为 PeaStem）
-    PeaSeed,         // 豌豆粒（分解后，预留 Phase 3）
+    PeaSeed,         // 豌豆粒（豌豆荚分解产物，Phase 3：携带基因，可放置为 PeaStem）
     GreenBeanPod,    // 青嫩豆荚（阶段3，不可放置）
     PeaPod,          // 豌豆荚（阶段4，不可放置）
     SeedBag,         // 种子袋（容器物品）

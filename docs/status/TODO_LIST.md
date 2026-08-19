@@ -65,7 +65,7 @@
 | Phase 0 | **物品系统重构**：新增 `ItemType` 枚举（独立于 `BlockType`）；`ItemInstance` 持 `ItemType` + 可选 `PlaceableBlockType`；增加 `phenotypeTags`/`genotypeTags` 标签字段；重构 `Backpack` 构造器 | ✅（2026-08-14） |
 | Phase 1 | **堆叠系统 + 背包存档**：背包支持堆叠（上限 64，按表型合并，内部分基因型计数）；`BackpackSaver`（二进制 `BPK1` 格式 → `backpack.dat`）；种子袋容器（右键打开，上限 1024）；`World.cs` 装配 | ✅（2026-08-14） |
 | Phase 2 | **采收逻辑 + 表型推导**：右键拦截豌豆（阶段≥3，含中段/顶端）；青嫩豆荚 / 豌豆荚（**采摘次数与产量由 8 个新基因共同控制**，`HarvestGenome` 存 HTT 载荷，见 HARVEST_SYSTEM.md §5.2 + `docs/design/HTT.md`）；采收后回退阶段 2，次数耗尽整株枯萎（`PeaWithered` 方块，玩家破坏去除）；vrf v4 + BPK1 v2 存档升级 | ⏳ 设计已定案（2026-08-16 修订）；**Step 0（HTT 载荷机制）✅、Step 1（PeaHarvestCalculator + 常量 + 随机 HarvestGenome）✅、Step 2（HarvestMask + PeaWithered）✅、Step 3（ChunkMeshBuilder 枯萎十字面片 + 不剔除名单）✅、Step 4（BlockUpdateCenter RevertToStage2/WitherPeaPlant + 枯萎破坏联动）✅、Step 5（表型标签子集重载 + 显式标签构造器 + BackpackSaver 缺口修复）✅、Step 6（BlockInteraction 右键采收全流程）✅**，Step 7（Play Mode 验证）待玩家执行 |
-| Phase 3 | **分解（后置）**：合成窗口 / 手持右键分解豌豆荚 → 4~8 粒豌豆种子；优先存入种子袋 | ⏳ |
+| Phase 3 | **分解（后置）**：手持右键分解豌豆荚 → 4~8 粒豌豆种子；优先存入种子袋 | ✅（2026-08-19，见 WORKLOG_2026-08-19；Play Mode 验证待玩家执行） |
 
 ## 其他待办 ⏳
 

@@ -24,6 +24,13 @@ public class BackpackWindow : MonoBehaviour
             if (!backpack.BackpackOpen) backpack.IsSeedBagOpen = false; // 关闭背包时同步关闭种子袋内容子面板
         }
 
+        // ESC 关闭背包（含种子袋内容子面板；种子袋仅在背包开启时可见，一并关闭）
+        if (Input.GetKeyDown(KeyCode.Escape) && backpack.BackpackOpen)
+        {
+            backpack.BackpackOpen = false;
+            backpack.IsSeedBagOpen = false;
+        }
+
         // 同步鼠标锁定状态：界面打开（背包窗 / 种子袋面板）时解锁并显示鼠标，否则锁定隐藏。
         // 每帧同步：覆盖 CameraMove 失焦后的遗留状态，也兼容热栏右键直接置 BackpackOpen 的路径
         if (backpack.BackpackOpen)
@@ -82,6 +89,24 @@ public class BackpackWindow : MonoBehaviour
                 backpack.OpenSeedBagSlotIndex = i;
                 Event.current.Use();
             }
+            // 右键豌豆荚行 → 分解为豌豆粒（优先存入种子袋，见 Phase 3）
+            else if (item.ItemType == ItemType.PeaPod &&
+                Event.current.type == EventType.MouseDown && Event.current.button == 1 &&
+                rowRect.Contains(Event.current.mousePosition))
+            {
+                int seedCount = backpack.DecomposePeaPod(i);
+                if (seedCount > 0)
+                {
+                    // LastBaggedSeedCount = 本次分解存入种子袋的粒数；其余落入背包
+                    int bagged = backpack.LastBaggedSeedCount;
+                    if (bagged > 0)
+                        Debug.Log($"分解豌豆荚 -> {seedCount} 粒豌豆粒（种子袋 {bagged} 粒，背包 {seedCount - bagged} 粒）");
+                    else
+                        Debug.Log($"分解豌豆荚 -> {seedCount} 粒豌豆粒（已存入种子袋）");
+                }
+                Event.current.Use();
+                break; // 槽可能已移除，行号已失效，下一帧重绘
+            }
 
             // 当前选中行高亮；整行可点击 → 选中该物品（热栏同步读同一 SelectedIndex，无需额外通知）
             GUI.backgroundColor = i == backpack.SelectedIndex
@@ -128,12 +153,28 @@ public class BackpackWindow : MonoBehaviour
                     new Rect(subRect.x + margin, subRect.y + margin, subWidth - margin * 2f, titleHeight),
                     $"种子袋（{seedBagItem.SeedBag.TotalCount}/{Constants.SEED_BAG_CAPACITY}）");
 
-                // 逐行显示基因型分布：Genome.ToString() 为 14 字符等位串 + x数量
+                // 逐行显示基因型分布：Genome.ToString() 为 14 字符等位串 + x数量 + 取出按钮
                 int rowIdx = 0;
                 foreach (var kv in peas)
                 {
                     Rect peaRow = new Rect(subRect.x + margin, subRect.y + titleHeight + rowIdx * rowHeight, subWidth - margin * 2f, rowHeight - 4f);
-                    GUI.Label(new Rect(peaRow.x, peaRow.y + 6f, subWidth - margin * 2f, 22f), $"{kv.Key} x{kv.Value}");
+                    GUI.Label(new Rect(peaRow.x, peaRow.y + 6f, peaRow.width - 52f, 22f), $"{kv.Key} x{kv.Value}");
+
+                    // 取出按钮：把该基因型全部豌豆从种子袋取出落入背包（可种植的豌豆粒）
+                    if (GUI.Button(new Rect(peaRow.x + peaRow.width - 48f, peaRow.y + 4f, 44f, rowHeight - 12f), "取出"))
+                    {
+                        int taken = seedBagItem.SeedBag.Take(kv.Key, kv.Value);
+                        if (taken > 0)
+                        {
+                            var seedItem = new ItemInstance(ItemType.PeaSeed, "豌豆粒", kv.Key, BlockType.PeaStem);
+                            seedItem.PhenotypeTags.Clear();
+                            seedItem.PhenotypeTags.AddRange(PeaTraits.GetPhenotypeTags(kv.Key, 0, 1));
+                            backpack.AddItem(seedItem, taken);
+                            // 注意：种子袋只存 Genome 计数，不含采收基因载荷——取出的种子采收基因回落到默认基线
+                            Event.current.Use();
+                            break; // 列表已变化，重新绘制
+                        }
+                    }
                     rowIdx++;
                 }
 
@@ -173,7 +214,7 @@ public class BackpackWindow : MonoBehaviour
                 ItemType.PeaPod when item.Genome.HasValue => PeaTextures.GetItemPodCell(item.Genome.Value),
                 ItemType.PeaPod => new Vector2Int(0, 0),        // 无基因兜底（占位）
                 ItemType.SeedBag => PeaTextures.ItemSeedBagCell,
-                ItemType.GreenBeanPod => new Vector2Int(0, 0),  // 占位，后续更换
+                ItemType.GreenBeanPod => PeaTextures.ItemGreenBeanPodCell,
                 _ => new Vector2Int(0, 0),
             };
         }

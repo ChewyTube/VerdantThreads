@@ -206,7 +206,9 @@ public static class BackpackSaver
 
         // 重建物品：
         //   SeedBag → 非方块构造 + 逐个 TryAdd 读回的袋内豌豆
-        //   携带基因 → genome 构造器（自动重算表型标签，与存档时一致）
+        //   携带基因 → genome 构造器（自动重算表型标签）；但位点子集标签物品（豌豆荚 {3,4}、
+        //     豌豆粒 {0,1}）的堆叠分组依赖存档时的子集标签，必须以读回的标签覆盖重算结果，
+        //     否则重启后标签数不同 → CanMergeWith 恒 false → 堆叠分组失效（青嫩豆荚同类的修复见下）
         //   可放置 → 方块构造；其余 → 非方块构造（无基因物品回填读回的表型标签——
         //     青嫩豆荚等显式标签物品重启后堆叠分组依赖它，见 HARVEST_SYSTEM.md §2.2）
         ItemInstance item;
@@ -217,7 +219,16 @@ public static class BackpackSaver
         }
         else if (hasGenome)
         {
-            item = new ItemInstance(itemType, displayName, new Genome(genomeValue));
+            // 携带基因：可放置（豌豆粒 → PeaStem）用带 PlaceableBlockType 的构造器，否则用无方块构造器
+            item = placeable.HasValue
+                ? new ItemInstance(itemType, displayName, new Genome(genomeValue), placeable.Value)
+                : new ItemInstance(itemType, displayName, new Genome(genomeValue));
+            // 覆盖为存档时的子集表型标签（若有）——豌豆荚/豌豆粒的堆叠分组依据
+            if (phenotypeTags.Count > 0)
+            {
+                item.PhenotypeTags.Clear();
+                item.PhenotypeTags.AddRange(phenotypeTags);
+            }
         }
         else if (placeable.HasValue)
         {

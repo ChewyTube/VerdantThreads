@@ -108,6 +108,9 @@ public static class PeaTextures
     // 种子袋图标 (10,4)
     public static readonly Vector2Int ItemSeedBagCell = new(10, 4);
 
+    // 青嫩豆荚图标 (10,5)：阶段 3 采收物品，无基因单图标（用户绘制）
+    public static readonly Vector2Int ItemGreenBeanPodCell = new(10, 5);
+
     // 占位绘制已停用：阶段 2/3 改用用户绘制的 (2,4)/(2,5) 两格贴图，(2,1)/(2,0) 运行时占位退役。
     // 函数体保留为空（InstallToMaterial 调用点与 WorldManager 不变），绝不写任何像素，特别是 (2,4)/(2,5)。
     public static void PaintAtlasPlaceholders(Texture2D atlas)

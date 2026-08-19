@@ -40,10 +40,11 @@ public class BlockInteraction : MonoBehaviour
             TryBreakBlock();
         }
 
-        // 鼠标右键：优先拦截豌豆采收；未命中豌豆再走放置
+        // 鼠标右键：优先分解手中豌豆荚（手持即消费，符合"手持右键分解"设计）→
+        // 再试豌豆采收（未手持豌豆荚时）→ 最后走放置
         if (Input.GetMouseButtonDown(1))
         {
-            if (!TryHarvestPea()) TryPlaceBlock();
+            if (!TryDecomposeSelected() && !TryHarvestPea()) TryPlaceBlock();
         }
     }
 
@@ -100,7 +101,7 @@ public class BlockInteraction : MonoBehaviour
         // 非可放置物品（豆荚/种子袋等）→ 不放置（未来可做其他右键交互）
         if (current.PlaceableBlockType == null) return;
 
-        // 放置成功（目标 chunk 存在/按需创建）才继续；PeaStem 放置时同步创建 tile（随机基因 + 世代 0）
+        // 放置成功（目标 chunk 存在/按需创建）才继续；PeaStem 放置时同步创建 tile（基因 + 世代 0）
         if (world.SetBlock(BlockRegistry.GetBlock(current.PlaceableBlockType.Value), placePos))
         {
             // 种植联动：豌豆种子放置 → 创建 tile 记录基因/世代/生长进度（生长 tick 据此推进阶段）
@@ -109,6 +110,14 @@ public class BlockInteraction : MonoBehaviour
                 var tile = new PeaTileData(current.Genome ?? Genome.Random(), 0);
                 tile.SetHarvestGenome(HarvestGenome.Random()); // 采收基因随机（玩家种植，非生成确定性契约）
                 world.SetTile(placePos, tile);
+            }
+            // 豌豆粒（分解产物）：继承母本基因组 + 载荷采收基因；消耗 1 粒（有限资源）
+            else if (current.ItemType == ItemType.PeaSeed)
+            {
+                var tile = new PeaTileData(current.Genome ?? Genome.Random(), 0);
+                tile.SetHarvestGenome(current.GetHarvestGenome()); // 载荷继承（无 → 全隐性基线）
+                world.SetTile(placePos, tile);
+                world.Backpack.TakeFromSelected(1); // 消耗一粒（种子袋内种子暂不可直接种植）
             }
         }
         RequestMeshRebuildAround(placePos);
@@ -186,6 +195,47 @@ public class BlockInteraction : MonoBehaviour
             world.BlockUpdateCenter.RevertToStage2(bottomPos);
         }
         RequestMeshRebuildAround(bottomPos);
+        return true;
+    }
+
+    // 右键分解选中物品：当前选中为豌豆荚（PeaPod）时 → 消耗 1 个，产出 4~8 粒豌豆种子
+    // （携带母本基因组 + 采收基因组的 HTT 载荷），优先存入种子袋。
+    // 返回 true 表示已消费右键（即使分解失败——无选中/非豌豆荚也返回 false 走放置逻辑）。
+    private bool TryDecomposeSelected()
+    {
+        if (world == null || world.Backpack == null)
+        {
+            Debug.Log("[分解] 跳过：world 或 Backpack 为空");
+            return false;
+        }
+
+        ItemInstance selected = world.Backpack.CurrentSelected;
+        if (selected == null)
+        {
+            Debug.Log($"[分解] 跳过：当前选中槽为空（SelectedIndex={world.Backpack.SelectedIndex}，槽数={world.Backpack.Count}）");
+            return false;
+        }
+
+        if (selected.ItemType != ItemType.PeaPod)
+        {
+            Debug.Log($"[分解] 跳过：选中物品不是豌豆荚，实际类型={selected.ItemType}，名称={selected.DisplayName}");
+            return false;
+        }
+
+        Debug.Log($"[分解] 开始分解豌豆荚（SelectedIndex={world.Backpack.SelectedIndex}，堆叠数={world.Backpack.GetSlotCount(world.Backpack.SelectedIndex)}）");
+        int seedCount = world.Backpack.DecomposePeaPod(world.Backpack.SelectedIndex);
+        if (seedCount < 0)
+        {
+            Debug.Log("[分解] 失败：DecomposePeaPod 返回 -1（槽无效/非豌豆荚/扣除失败）");
+            return false;
+        }
+
+        // LastBaggedSeedCount = 本次分解存入种子袋的粒数；其余落入背包
+        int bagged = world.Backpack.LastBaggedSeedCount;
+        if (bagged > 0)
+            Debug.Log($"分解豌豆荚 -> {seedCount} 粒豌豆粒（种子袋 {bagged} 粒，背包 {seedCount - bagged} 粒）");
+        else
+            Debug.Log($"分解豌豆荚 -> {seedCount} 粒豌豆粒（已存入种子袋）");
         return true;
     }
 
