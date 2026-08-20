@@ -12,7 +12,10 @@ public static class Constants
     public const int CHUNK_VOLUME = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE; // 16³ = 4096 方块
 
     // ---- 物品栏（热栏）与背包 ----
-    public const int HOTBAR_SLOT_COUNT = 9;               // 热栏固定槽位数
+    public const int HOTBAR_SLOT_COUNT = 9;               // 热栏固定槽位数（= 背包每行格数）
+    public const int INVENTORY_ROWS = 4;                  // 背包总行数（含热栏行）
+    public const int INVENTORY_COLUMNS = 9;               // 每行格数（= HOTBAR_SLOT_COUNT；index = row * COLUMNS + col）
+    public const int INVENTORY_SLOT_COUNT = INVENTORY_ROWS * INVENTORY_COLUMNS; // 总格数 = 36（row 0 = 热栏）
     public const KeyCode BACKPACK_TOGGLE_KEY = KeyCode.E; // 背包窗开关按键
     public const int STACK_LIMIT = 64;                 // 物品单格堆叠上限
     public const int SEED_BAG_CAPACITY = 1024;         // 种子袋容量上限（豌豆总数）
@@ -41,4 +44,18 @@ public static class Constants
     public const int PEA_CLUMP_MIN_PLANTS = 14;         // 每丛最少株数
     public const int PEA_CLUMP_MAX_PLANTS = 18;         // 每丛最多株数（均值 16 左右）
     public const int PEA_CLUMP_RADIUS = 3;              // 丛内株距中心的最大水平偏移（格）
+
+    // ---- 体素碰撞与玩家物理（方案 C，见 docs/design/VOXEL_COLLISION.md）----
+    public const float PLAYER_GRAVITY = 28f;            // 玩家重力加速度（blocks/s²）
+    public const float PLAYER_JUMP_SPEED = 8.5f;        // 跳跃初速（跳高 ≈ 1.25 格，MC 同款）
+    public const float PLAYER_WALK_SPEED = 4.3f;        // 步行速度（blocks/s，MC 同款）
+    public const float PLAYER_EYE_HEIGHT = 1.62f;       // 眼睛高度（相机位置 = 身体位置 + 此值）
+    public const float PLAYER_HALF_WIDTH = 0.3f;        // 身体半宽（AABB 0.6 宽）
+    public const float PLAYER_HALF_HEIGHT = 0.9f;       // 身体半高（AABB 1.8 高）
+    public const float PLAYER_STEP_HEIGHT = 0.5f;       // 自动上台阶高度（水平被挡时尝试）
+    public const float DROPPED_ITEM_GRAVITY = 20f;      // 掉落物重力加速度（blocks/s²）
+    public const float DROPPED_ITEM_HALF_SIZE = 0.125f; // 掉落物 AABB 半边长（0.25³）
+    public const float DROPPED_ITEM_LIFETIME = 300f;    // 掉落物消失时间（秒，MC 5 分钟）
+    public const int DROPPED_ITEM_CAP = 64;             // 全场景掉落物数量上限（超出丢弃最老的）
+    public const float DROPPED_ITEM_PICKUP_RADIUS = 1.5f; // 拾取半径（格）
 }

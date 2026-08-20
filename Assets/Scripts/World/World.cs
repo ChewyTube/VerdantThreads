@@ -20,6 +20,8 @@ public class World : MonoBehaviour
     private ChunkStore store;
     private ChunkStreamer streamer;
     private BlockUpdateCenter blockUpdateCenter; // 方块更新中心（随机刻 / 方块联动 / 计划刻统一分派）
+    private DroppedItemManager droppedItemManager; // 掉落物管理器（Q 扔出 / 拾取 / 消失）
+    private Func<Vector3Int, bool> isSolidDelegate; // 体素碰撞查询委托（缓存避免每帧分配）
 
     // 背包（选择状态唯一权威）：由 Awake 创建，注入给热栏 / 背包窗 / BlockInteraction
     public Backpack Backpack { get; private set; }
@@ -54,14 +56,28 @@ public class World : MonoBehaviour
         hotbar.Init(Backpack);
         BackpackWindow backpackWindow = gameObject.AddComponent<BackpackWindow>();
         backpackWindow.Init(Backpack);
+
+        // 掉落物管理器：注入体素碰撞查询（未加载 chunk 视为非固体）
+        isSolidDelegate = pos => IsSolid(pos.x, pos.y, pos.z);
+        droppedItemManager = new DroppedItemManager(isSolidDelegate);
     }
 
     void Start()
     {
         cam = Camera.main;
-        cam.transform.position = cameraSpawnPos; // 出生点可配，不再强制 (0,64,0)
+        // 玩家位置存档：有存档读回上次位置（避免每次进游戏都从出生点坠落），否则用出生点
+        Vector3 spawn = cameraSpawnPos;
+        if (PlayerPositionSaver.TryLoad(out Vector3 saved)) spawn = saved;
+        cam.transform.position = spawn;
 
-        Vector3Int camVCPos = new BlockPosInWorld((int)cameraSpawnPos.x, (int)cameraSpawnPos.y, (int)cameraSpawnPos.z).GetCorrespondingVCPos();
+        // 玩家控制器：替换原 CameraMove 自由飞行（体素碰撞行走 + F 飞行调试）。
+        // 场景相机上的旧 CameraMove 组件已随类重命名（保留 meta guid）变为 PlayerController，
+        // 这里兜底：若相机上还没有则挂一个。
+        if (cam.GetComponent<PlayerController>() == null)
+            cam.gameObject.AddComponent<PlayerController>();
+
+        // 初始 chunk 围绕实际出生位置（读回存档时围绕存档位置，而非 cameraSpawnPos）
+        Vector3Int camVCPos = new BlockPosInWorld((int)spawn.x, (int)spawn.y, (int)spawn.z).GetCorrespondingVCPos();
         streamer.InitializeCamera(camVCPos);
         streamer.GenerateInitial(camVCPos);
     }
@@ -88,11 +104,15 @@ public class World : MonoBehaviour
         }
         if (_growthTickAccumulator >= Constants.PEA_GROWTH_TICK_INTERVAL)
             _growthTickAccumulator = 0f; // 超过单帧上限：丢弃剩余积压
+
+        // 掉落物 tick：物理 / billboard / 拾取 / 消失（与背包开关无关，掉落物持续模拟）
+        droppedItemManager.Tick(cam.transform.position, Backpack);
     }
 
     void OnDestroy()
     {
         saver.Dispose(); // 释放 Saver 持有的 FileStream，防止泄漏（内部会排空保存队列后退出）
+        if (droppedItemManager != null) droppedItemManager.Clear(); // 清理掉落物实体
     }
 
     void OnApplicationQuit()
@@ -100,6 +120,8 @@ public class World : MonoBehaviour
         SaveAllLoadedChunks();
         // 背包存档（含堆叠数量、内部分基因型分布、种子袋内容）；失败仅日志警告不影响退出
         if (Backpack != null) BackpackSaver.Save(Backpack);
+        // 玩家位置存档（下次启动读回）
+        if (cam != null) PlayerPositionSaver.Save(cam.transform.position);
     }
 
     // 退出兜底：卸载路径只保存被卸载的 chunk，仍在内存的 chunk 若不主动入队会丢修改
@@ -127,6 +149,22 @@ public class World : MonoBehaviour
     // 读取 chunk 块数据（未加载返回 null；BlockInteraction / mesh 快照用）
     public Block[,,] GetChunkBlocks(VCPosInWorld vcPos) => store.GetChunkBlocks(vcPos);
 
+    // 体素碰撞查询：世界坐标 (x,y,z) 处是否为固体（未加载 chunk 或越界视为非固体）。
+    // 供 PlayerController / DroppedItemManager 注入 VoxelCollision（方案 C）。
+    // 豌豆植株（茎/中/顶格）是"草"类非固体：玩家/掉落物可穿过（cross-quad 渲染，无实体方块感）。
+    // 注意：射线命中/放置检查走 BlockInteraction.IsSolid（豌豆仍可被点击破坏/采收，放置仍被其阻挡）。
+    public bool IsSolid(int x, int y, int z)
+    {
+        Block[,,] blocks = store.GetChunkBlocks(new VCPosInWorld(x >> Constants.CHUNK_SIZE_LOG2, y >> Constants.CHUNK_SIZE_LOG2, z >> Constants.CHUNK_SIZE_LOG2));
+        if (blocks == null) return false;
+
+        int mask = Constants.CHUNK_SIZE - 1;
+        BlockType type = blocks[x & mask, y & mask, z & mask].GetBlockType();
+        if (type == BlockType.PeaStem || type == BlockType.PeaPlantMiddle || type == BlockType.PeaPlantTop)
+            return false; // 豌豆植株非固体（草类）
+        return type != BlockType.Air;
+    }
+
     // 豌豆 tile 读写转发（仅主线程；种植/破坏/生长 tick 用）
     public bool SetTile(BlockPosInWorld pos, PeaTileData tile) => store.SetTile(pos, tile);
     public bool RemoveTile(BlockPosInWorld pos) => store.RemoveTile(pos);
@@ -134,4 +172,10 @@ public class World : MonoBehaviour
 
     // 方块更新中心（采收回退/枯萎转换等逻辑层 API 入口，BlockInteraction 采收用）
     public BlockUpdateCenter BlockUpdateCenter => blockUpdateCenter;
+
+    // 生成掉落物实体（Q 扔出等入口；物理/拾取/消失由 DroppedItemManager 驱动）
+    public void DropItem(ItemInstance item, int count, Vector3 position, Vector3 velocity)
+    {
+        droppedItemManager.Spawn(item, count, position, velocity);
+    }
 }

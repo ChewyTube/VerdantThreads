@@ -46,6 +46,12 @@ public class BlockInteraction : MonoBehaviour
         {
             if (!TryDecomposeSelected() && !TryHarvestPea()) TryPlaceBlock();
         }
+
+        // Q 键扔出选中物品（Shift+Q 扔整组）：生成掉落物实体（方案 C 体素物理）
+        if (Input.GetKeyDown(KeyCode.Q))
+        {
+            TryDropSelected();
+        }
     }
 
     // 破坏逻辑：命中且非世界最底层 Bedrock 则置为 Air，并重建相关 chunk mesh。
@@ -200,6 +206,7 @@ public class BlockInteraction : MonoBehaviour
 
     // 右键分解选中物品：当前选中为豌豆荚（PeaPod）时 → 消耗 1 个，产出 4~8 粒豌豆种子
     // （携带母本基因组 + 采收基因组的 HTT 载荷），优先存入种子袋。
+    // 按住 Shift 右键 → 分解选中槽内全部豌豆荚（逐粒循环，槽清空后自动停止）。
     // 返回 true 表示已消费右键（即使分解失败——无选中/非豌豆荚也返回 false 走放置逻辑）。
     private bool TryDecomposeSelected()
     {
@@ -212,7 +219,7 @@ public class BlockInteraction : MonoBehaviour
         ItemInstance selected = world.Backpack.CurrentSelected;
         if (selected == null)
         {
-            Debug.Log($"[分解] 跳过：当前选中槽为空（SelectedIndex={world.Backpack.SelectedIndex}，槽数={world.Backpack.Count}）");
+            Debug.Log($"[分解] 跳过：当前选中槽为空（SelectedIndex={world.Backpack.SelectedIndex}，占用槽数={world.Backpack.OccupiedCount}）");
             return false;
         }
 
@@ -222,21 +229,74 @@ public class BlockInteraction : MonoBehaviour
             return false;
         }
 
-        Debug.Log($"[分解] 开始分解豌豆荚（SelectedIndex={world.Backpack.SelectedIndex}，堆叠数={world.Backpack.GetSlotCount(world.Backpack.SelectedIndex)}）");
-        int seedCount = world.Backpack.DecomposePeaPod(world.Backpack.SelectedIndex);
-        if (seedCount < 0)
+        // Shift + 右键：分解选中槽内全部豌豆荚；普通右键只分解 1 个
+        bool decomposeAll = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+        Debug.Log($"[分解] 开始分解豌豆荚（SelectedIndex={world.Backpack.SelectedIndex}，堆叠数={world.Backpack.GetSlotCount(world.Backpack.SelectedIndex)}，模式={(decomposeAll ? "全部" : "单个")}）");
+
+        int totalSeeds = 0;
+        int totalBagged = 0;
+        int decomposed = 0;
+        while (true)
+        {
+            // 槽被清空后 SelectedIndex 会顶位/下移，逐次校验当前选中仍是豌豆荚
+            ItemInstance cur = world.Backpack.CurrentSelected;
+            if (cur == null || cur.ItemType != ItemType.PeaPod) break;
+
+            int seedCount = world.Backpack.DecomposePeaPod(world.Backpack.SelectedIndex);
+            if (seedCount < 0)
+            {
+                Debug.Log("[分解] 失败：DecomposePeaPod 返回 -1（槽无效/非豌豆荚/扣除失败）");
+                break;
+            }
+            totalSeeds += seedCount;
+            totalBagged += world.Backpack.LastBaggedSeedCount;
+            decomposed++;
+            if (!decomposeAll) break;
+        }
+
+        if (decomposed == 0)
         {
             Debug.Log("[分解] 失败：DecomposePeaPod 返回 -1（槽无效/非豌豆荚/扣除失败）");
             return false;
         }
 
         // LastBaggedSeedCount = 本次分解存入种子袋的粒数；其余落入背包
-        int bagged = world.Backpack.LastBaggedSeedCount;
-        if (bagged > 0)
-            Debug.Log($"分解豌豆荚 -> {seedCount} 粒豌豆粒（种子袋 {bagged} 粒，背包 {seedCount - bagged} 粒）");
+        if (decomposed == 1)
+        {
+            if (totalBagged > 0)
+                Debug.Log($"分解豌豆荚 -> {totalSeeds} 粒豌豆粒（种子袋 {totalBagged} 粒，背包 {totalSeeds - totalBagged} 粒）");
+            else
+                Debug.Log($"分解豌豆荚 -> {totalSeeds} 粒豌豆粒（已存入种子袋）");
+        }
         else
-            Debug.Log($"分解豌豆荚 -> {seedCount} 粒豌豆粒（已存入种子袋）");
+        {
+            Debug.Log($"Shift 分解豌豆荚 x{decomposed} -> 共 {totalSeeds} 粒豌豆粒（种子袋 {totalBagged} 粒，背包 {totalSeeds - totalBagged} 粒）");
+        }
         return true;
+    }
+
+    // Q 键扔出：选中槽非空 → 从背包取出（Q 扔 1 个，Shift+Q 扔整组）→ 生成掉落物实体。
+    // 位置 = 眼睛 + 前向 1.5 + 上 0.5；初速度 = 前向 3 + 上 2（MC"扔"手感）。
+    private void TryDropSelected()
+    {
+        if (world == null || world.Backpack == null) return;
+
+        int sel = world.Backpack.SelectedIndex;
+        if (sel < 0 || sel >= world.Backpack.Count) return;
+        ItemInstance current = world.Backpack.CurrentSelected;
+        if (current == null) return;
+
+        // Q 扔 1 个；Shift+Q 扔整组
+        bool dropAll = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+        int count = dropAll ? world.Backpack.GetSlotCount(sel) : 1;
+
+        int taken = world.Backpack.TakeFromSelected(count);
+        if (taken <= 0) return;
+
+        // 生成掉落物：位置 = 眼睛 + 前向 1.5 + 上 0.5；初速度 = 前向 3 + 上 2
+        Vector3 pos = transform.position + transform.forward * 1.5f + Vector3.up * 0.5f;
+        Vector3 vel = transform.forward * 3f + Vector3.up * 2f;
+        world.DropItem(current, taken, pos, vel);
     }
 
     // 体素射线检测（Amanatides-Woo DDA 网格步进）：返回命中块世界坐标与进入面法线

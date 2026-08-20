@@ -5,6 +5,8 @@ using UnityEngine;
 
 // 背包存档：极简二进制格式（magic "BPK1" + 版本 + 槽列表），独立于 .vrf 地形存档。
 // 存档时机：World.OnApplicationQuit；读取时机：World.Awake（Backpack 创建后）。
+// v3（2026-08-20）：固定 36 格网格（4 行 × 9 列），逐格写 bool isEmpty 标记 + 非空槽字段，槽位持久化。
+// v1/v2（旧）：动态槽列表，无空槽标记；加载时顺序填入网格（前 36 格，其余截断）。
 // 槽序列化字段顺序（WriteSlot / ReadSlot 配套，务必保持一致）：
 //   int ItemType / string DisplayName / bool hasPlaceable+int / bool hasGenome+uint /
 //   int Count / 基因型分布 / 表型标签 / 基因型标签 / bool isSeedBag+种子袋内容 /
@@ -12,11 +14,11 @@ using UnityEngine;
 public static class BackpackSaver
 {
     private const string Magic = "BPK1";     // 魔数：格式标识
-    private const byte Version = 2;          // 格式版本（v2 新增槽 HTT 载荷段）
+    private const byte Version = 3;          // 格式版本（v3 固定 36 格网格；v2 新增槽 HTT 载荷段）
 
     private static string GetPath() => Path.Combine(Application.persistentDataPath, "world_saves", Constants.BACKPACK_SAVE_FILE);
 
-    // 保存：全量写槽列表（含堆叠数量、基因型分布、种子袋内容）。失败仅日志警告，不抛异常。
+    // 保存：全量写 36 格（空槽写 isEmpty 标记，非空槽写字段）。失败仅日志警告，不抛异常。
     public static void Save(Backpack backpack)
     {
         try
@@ -29,9 +31,13 @@ public static class BackpackSaver
             {
                 writer.Write(Magic.ToCharArray());
                 writer.Write(Version);
-                writer.Write(backpack.Count);
-                for (int i = 0; i < backpack.Count; i++)
-                    WriteSlot(writer, i, backpack);
+                writer.Write(Constants.INVENTORY_SLOT_COUNT);
+                for (int i = 0; i < Constants.INVENTORY_SLOT_COUNT; i++)
+                {
+                    ItemInstance item = backpack[i];
+                    writer.Write(item == null); // isEmpty 标记
+                    if (item != null) WriteSlot(writer, i, backpack);
+                }
             }
         }
         catch (Exception e)
@@ -67,12 +73,33 @@ public static class BackpackSaver
                     Debug.LogWarning("背包存档槽数异常，忽略存档");
                     return null;
                 }
-                var slots = new List<StackSlot>(count);
-                for (int i = 0; i < count; i++)
+                var slots = new List<StackSlot>(Constants.INVENTORY_SLOT_COUNT);
+                if (version >= 3)
                 {
-                    StackSlot slot = ReadSlot(reader, version);
-                    if (slot == null) { Debug.LogWarning("背包存档槽解析失败，忽略存档"); return null; }
-                    slots.Add(slot);
+                    // v3：固定 36 格，逐格读 isEmpty 标记
+                    if (count != Constants.INVENTORY_SLOT_COUNT)
+                    {
+                        Debug.LogWarning($"背包存档槽数异常（v3 应为 {Constants.INVENTORY_SLOT_COUNT}，实际 {count}），忽略存档");
+                        return null;
+                    }
+                    for (int i = 0; i < count; i++)
+                    {
+                        bool isEmpty = reader.ReadBoolean();
+                        if (isEmpty) { slots.Add(null); continue; }
+                        StackSlot slot = ReadSlot(reader, version);
+                        if (slot == null) { Debug.LogWarning("背包存档槽解析失败，忽略存档"); return null; }
+                        slots.Add(slot);
+                    }
+                }
+                else
+                {
+                    // v1/v2：动态槽列表 → 顺序填入网格（前 36 格，其余截断）
+                    for (int i = 0; i < count; i++)
+                    {
+                        StackSlot slot = ReadSlot(reader, version);
+                        if (slot == null) { Debug.LogWarning("背包存档槽解析失败，忽略存档"); return null; }
+                        if (i < Constants.INVENTORY_SLOT_COUNT) slots.Add(slot);
+                    }
                 }
                 var backpack = new Backpack();
                 backpack.ReplaceAll(slots);
@@ -86,11 +113,10 @@ public static class BackpackSaver
         }
     }
 
-    // 写单个槽（字段顺序与 ReadSlot 严格一致）
+    // 写单个槽（字段顺序与 ReadSlot 严格一致；调用方保证 item 非空）
     private static void WriteSlot(BinaryWriter writer, int index, Backpack backpack)
     {
         ItemInstance item = backpack[index];
-        if (item == null) { writer.Write(-1); return; } // 防御：空槽写非法 ItemType，加载时整档拒绝
 
         writer.Write((int)item.ItemType);
         writer.Write(item.DisplayName);

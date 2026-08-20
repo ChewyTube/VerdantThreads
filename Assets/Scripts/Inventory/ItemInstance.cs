@@ -36,6 +36,11 @@ public class ItemInstance
         return Payload != null ? new HarvestGenome((uint)Payload.GetInt("harvestGenome")) : default;
     }
 
+    // 是否可堆叠：豌豆粒例外（分解产物，按表型分组合并）；其余可放置方块与种子袋不可堆叠。
+    // 供 Backpack.AddItem / DroppedItemManager 合并共用。
+    public bool IsStackable =>
+        !((PlaceableBlockType.HasValue && ItemType != ItemType.PeaSeed) || ItemType == ItemType.SeedBag);
+
     // 可放置方块物品构造：绑定对应 BlockType
     public ItemInstance(ItemType itemType, string displayName, BlockType placeableBlockType)
     {

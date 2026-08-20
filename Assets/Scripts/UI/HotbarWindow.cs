@@ -12,6 +12,24 @@ public class HotbarWindow : MonoBehaviour
         this.backpack = backpack;
     }
 
+    private void Update()
+    {
+        if (backpack == null) return;
+
+        // 背包窗打开时不响应滚轮（鼠标已解锁，避免与背包内操作冲突）
+        if (backpack.BackpackOpen) return;
+
+        // 鼠标滚轮切换热栏选中（MC 行为：上滚向左、下滚向右，在 0-8 内循环）。
+        // 选中在主背包（row>0）时先回到热栏再滚动。
+        float scroll = Input.mouseScrollDelta.y;
+        if (scroll != 0f)
+        {
+            int hotbarSel = Mathf.Clamp(backpack.SelectedIndex, 0, Constants.HOTBAR_SLOT_COUNT - 1);
+            hotbarSel = (hotbarSel + (scroll > 0 ? -1 : 1) + Constants.HOTBAR_SLOT_COUNT) % Constants.HOTBAR_SLOT_COUNT;
+            backpack.Select(hotbarSel);
+        }
+    }
+
     // 图集惰性获取：WorldManager 单例可能未就绪 / 材质缺失，返回 null 时跳过图标绘制（不报错）
     private Texture2D GetAtlasTexture()
     {
@@ -53,7 +71,7 @@ public class HotbarWindow : MonoBehaviour
                 if (item != null)
                 {
                     Rect iconRect = new Rect(slotRect.x + 6f, slotRect.y + 6f, slotRect.width - 12f, slotRect.height - 12f);
-                    GUI.DrawTextureWithTexCoords(iconRect, atlas, CalcIconUVRect(item));
+                    GUI.DrawTextureWithTexCoords(iconRect, atlas, ItemIcon.GetUVRect(item));
                 }
             }
 
@@ -98,38 +116,5 @@ public class HotbarWindow : MonoBehaviour
         }
     }
 
-    // 物品图标 UV：图集 768×768 = 32×32 个 24px cell（16px 贴图 + 两侧 4px padding），row 从图集底部起算。
-    // 豌豆种子特判（PeaStem 无 BlockUVMap 条目，走 Fallback 会显示错误图标）；其余可放置方块取 Up 面 cell；
-    // 非方块物品（豆荚/种子袋等）按类型+基因选图集 cell。
-    private static Rect CalcIconUVRect(ItemInstance item)
-    {
-        Vector2Int cell;
-        if (item.ItemType == ItemType.PeaSeedBlock)
-        {
-            // 豌豆种子 → 最小苗图标（不随可放置方块走 BlockUVMap）
-            cell = PeaTextures.CellByStage[0];
-        }
-        else if (item.PlaceableBlockType.HasValue)
-        {
-            // 可放置方块 → 从 BlockUVMap 取 Up 面 cell
-            cell = BlockUVMap.GetUV(item.PlaceableBlockType.Value, Direction.Up);
-        }
-        else
-        {
-            // 非方块物品 → 按类型选图集 cell（豌豆荚/豌豆粒按基因选表型图标；青嫩豆荚暂用占位）
-            cell = item.ItemType switch
-            {
-                ItemType.PeaSeed when item.Genome.HasValue => PeaTextures.GetItemSeedCell(item.Genome.Value),
-                ItemType.PeaSeed => PeaTextures.CellByStage[0], // 无基因兜底
-                ItemType.PeaPod when item.Genome.HasValue => PeaTextures.GetItemPodCell(item.Genome.Value),
-                ItemType.PeaPod => new Vector2Int(0, 0),        // 无基因兜底（占位）
-                ItemType.SeedBag => PeaTextures.ItemSeedBagCell,
-                ItemType.GreenBeanPod => PeaTextures.ItemGreenBeanPodCell,
-                _ => new Vector2Int(0, 0),
-            };
-        }
-        // Rect 不支持 / 运算符，逐分量除以 768 得到归一化 UV
-        Rect uv = new Rect(cell.x * 24 + 4, cell.y * 24 + 4, 16, 16);
-        return new Rect(uv.x / 768f, uv.y / 768f, uv.width / 768f, uv.height / 768f);
-    }
+    // 物品图标 UV 提取已抽到 ItemIcon.GetUVRect（BackpackWindow / HotbarWindow / DroppedItem 共用）
 }
